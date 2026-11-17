@@ -82,6 +82,28 @@ CREATE TABLE IF NOT EXISTS turns (
     created_at  TIMESTAMPTZ DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_turns_session ON turns (session_id, id DESC);
+CREATE TABLE IF NOT EXISTS change_log (
+    id          BIGSERIAL PRIMARY KEY,
+    detected_at TIMESTAMPTZ DEFAULT now(),
+    kind        TEXT NOT NULL,
+    url         TEXT,
+    title       TEXT,
+    doc_key     TEXT,
+    detail      JSONB,
+    reviewed    BOOLEAN DEFAULT false
+);
+CREATE INDEX IF NOT EXISTS idx_change_time ON change_log (detected_at DESC);
+
+CREATE TABLE IF NOT EXISTS eval_baselines (
+    id           BIGSERIAL PRIMARY KEY,
+    created_at   TIMESTAMPTZ DEFAULT now(),
+    label        TEXT,
+    metrics      JSONB NOT NULL,
+    details      JSONB,
+    doc_count    INT,
+    clause_count INT
+);
+
 CREATE TABLE IF NOT EXISTS user_profiles (
     session_id  TEXT PRIMARY KEY,
     profile     JSONB NOT NULL,
