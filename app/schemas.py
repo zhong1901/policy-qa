@@ -57,3 +57,4 @@ class AskResponse(BaseModel):
     conflicts: list[str] = Field(default_factory=list, description="资料之间的冲突")
     as_of: date = Field(..., description="本次判定所依据的时间点")
     latency_ms: int = Field(0, description="服务端耗时（毫秒）")
+    cached: bool = Field(False, description="是否命中答案缓存")

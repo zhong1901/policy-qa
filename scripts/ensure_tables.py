@@ -57,6 +57,16 @@ CREATE TABLE IF NOT EXISTS query_log (
 
 CREATE INDEX IF NOT EXISTS idx_log_time ON query_log (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_qa_stratum ON qa_eval (stratum);
+
+CREATE TABLE IF NOT EXISTS answer_cache (
+    cache_key     TEXT PRIMARY KEY,
+    question      TEXT NOT NULL,
+    as_of         DATE NOT NULL,
+    answer        JSONB NOT NULL,
+    retrieved_ids BIGINT[],
+    created_at    TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_cache_time ON answer_cache (created_at DESC);
 """
 
 

@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     # ---- 访问口令（公网部署必填；本地留空则完全开放）----
     access_code: str | None = None
 
+    # ---- 答案缓存 ----
+    cache_enabled: bool = True
+    cache_ttl_days: int = 7
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

@@ -396,6 +396,7 @@ function renderAnswer(d){
   const confMap = {high:"高", medium:"中", low:"低"};
   parts.push(`<div class="meta">
     <span class="conf-badge">把握度 ${confMap[d.confidence] || d.confidence}</span>
+    ${d.cached ? '<span class="dot"></span><span class="conf-badge" style="background:#f0ece5;color:#8a857e">缓存</span>' : ''}
     <span class="dot"></span><span>耗时 ${d.latency_ms}ms</span>
     <span class="dot"></span><span>判定时点 ${esc(d.as_of)}</span>
   </div>`);
