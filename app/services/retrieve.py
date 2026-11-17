@@ -111,9 +111,13 @@ _KEYWORD_SQL = """
               OR COALESCE(c.effective_from, d.effective_from) <= $2::date)
        AND (COALESCE(c.effective_to, d.effective_to) IS NULL
               OR COALESCE(c.effective_to, d.effective_to) >= $2::date)
-     ORDER BY hit DESC
      LIMIT $3
 """
+
+# 注意：这里刻意「不在 SQL 里 ORDER BY hit DESC」。
+# 实测按命中词数排序会系统性偏向长条款（长文本天然命中更多 bigram），
+# 把精确的短条款挤出候选，评测 Recall@5 从 0.93 掉到 0.7 左右。
+# 改为取一个更大的候选池，再在 Python 侧按命中数取前 N —— 与调优前的行为一致。
 
 _FETCH_SQL = """
     SELECT c.id, c.doc_key, c.clause_no, c.clause_path, c.content,
@@ -145,8 +149,11 @@ async def _keyword_candidates(
     if not terms:
         return []
     patterns = [f"%{t}%" for t in terms]
-    rows = await pool.fetch(_KEYWORD_SQL, patterns, as_of, max(k * _KEYWORD_OVERFETCH, 40))
-    return [(r["id"], float(r["hit"])) for r in rows]
+    rows = await pool.fetch(_KEYWORD_SQL, patterns, as_of, max(k * _KEYWORD_OVERFETCH, 120))
+    cand = [(r["id"], float(r["hit"])) for r in rows]
+    # 在 Python 侧排序：SQL 里排会偏向长条款（见 _KEYWORD_SQL 上方的注释）
+    cand.sort(key=lambda x: x[1], reverse=True)
+    return cand[:k]
 
 
 def _rrf_fuse(
@@ -196,11 +203,17 @@ async def hybrid_retrieve(
     as_of: date,
     settings: Settings,
     limit: int | None = None,
+    meta: dict | None = None,
 ) -> list[ClauseHit]:
     """混合检索主入口：两路并行召回 → RRF 融合 → 取前 limit 条正文。
 
     降级策略：两路互不拖累。embedding 挂了关键词路照样出结果，反之亦然。
     只有两路都失败时才向上抛错。
+
+    meta 是可选输出参数，会写入：
+      vector_ok / keyword_ok  两路是否成功
+      kw_top_score            关键词路最高命中词数
+    上层用它决定「没有向量信号时该怎么保守地判拒答」。
     """
     limit = limit or settings.top_k_final
     terms = _extract_terms(question)
@@ -220,10 +233,19 @@ async def hybrid_retrieve(
     if keyword_error is not None:
         logger.warning("关键词路不可用，已降级为纯向量检索: %s", keyword_error)
 
+    if meta is not None:
+        meta["vector_ok"] = vector_error is None
+        meta["keyword_ok"] = keyword_error is None
+        meta["kw_top_score"] = max((s for _, s in keyword_ids), default=0.0)
+
     if vector_error is not None and keyword_error is not None:
         raise keyword_error
 
-    fused = _rrf_fuse(vector_ids, keyword_ids)[:limit]
+    # 两路进入融合的候选数必须对称。
+    # 关键词路按命中词数排序后可能长达 90 条，如果全部参与 RRF，
+    # 它会系统性地压过只在向量路命中的高分条款（实测 B01 的 gold 排向量第 1 却被挤到 top5 之外）。
+    # 所以关键词只取前 top_k_keyword 条，与向量路对齐。
+    fused = _rrf_fuse(vector_ids, keyword_ids[:settings.top_k_keyword])[:limit]
 
     hits_map = await _fetch_hits(pool, [cid for cid, _, _ in fused])
 

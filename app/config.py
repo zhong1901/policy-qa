@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     cache_enabled: bool = True
     cache_ttl_days: int = 7
 
+    # 降级兜底：向量路不可用时，没有相似度可判，
+    # 改用「关键词命中词数」作为证据强度，低于此值直接拒答。
+    degraded_min_keyword_hits: int = 2
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

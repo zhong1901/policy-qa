@@ -138,9 +138,10 @@ async def ask_events(
 
     # ---- 检索 ----
     yield ("status", {"stage": "retrieving", "text": "正在检索政策条款"})
+    meta: dict = {}
     try:
         hits = await hybrid_retrieve(pool, question, as_of, settings,
-                                     limit=settings.top_k_final)
+                                     limit=settings.top_k_final, meta=meta)
     except EmbeddingNotConfigured as exc:
         yield ("error", {"detail": str(exc), "status": 503})
         return
@@ -152,6 +153,11 @@ async def ask_events(
         logger.exception("数据库查询失败")
         yield ("error", {"detail": "数据库查询失败", "status": 503})
         return
+
+    degraded = not meta.get("vector_ok", True)
+    if degraded:
+        yield ("status", {"stage": "degraded",
+                          "text": "向量检索不可用，已降级为关键词检索"})
 
     ids = [h.clause_id for h in hits]
 
@@ -169,14 +175,29 @@ async def ask_events(
         yield ("answer", resp.model_dump(mode="json"))
         return
 
-    # ---- 闸 ②：相似度 ----
-    top_sim = hits[0].vector_sim
-    if top_sim is not None and top_sim < settings.refusal_threshold:
-        resp = await finish(
-            _refuse(as_of, started, f"top1 相似度 {top_sim:.3f} < {settings.refusal_threshold}"),
-            ids, "low_similarity")
-        yield ("answer", resp.model_dump(mode="json"))
-        return
+    # ---- 闸 ②：证据强度 ----
+    # 这里有个曾经真实存在的漏洞：向量路挂了就没有 vector_sim，
+    # 旧写法 `if top_sim is not None and ...` 会直接短路，等于降级时什么都能答。
+    # 现在按「有没有向量信号」分成两条判据。
+    if degraded:
+        kw_score = meta.get("kw_top_score", 0)
+        if kw_score < settings.degraded_min_keyword_hits:
+            resp = await finish(
+                _refuse(as_of, started,
+                        f"降级模式关键词命中不足（{kw_score:g} < "
+                        f"{settings.degraded_min_keyword_hits}）"),
+                ids, "degraded_weak")
+            yield ("answer", resp.model_dump(mode="json"))
+            return
+    else:
+        top_sim = hits[0].vector_sim
+        if top_sim is not None and top_sim < settings.refusal_threshold:
+            resp = await finish(
+                _refuse(as_of, started,
+                        f"top1 相似度 {top_sim:.3f} < {settings.refusal_threshold}"),
+                ids, "low_similarity")
+            yield ("answer", resp.model_dump(mode="json"))
+            return
 
     # ---- 生成 ----
     yield ("status", {"stage": "generating", "text": "正在生成答案并核对出处"})
