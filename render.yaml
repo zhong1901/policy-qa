@@ -1,4 +1,4 @@
-services:
+﻿services:
   - type: web
     name: policy-qa
     runtime: python
@@ -45,5 +45,9 @@ services:
         value: "30"
       - key: TOP_K_FINAL
         value: "5"
+
+      # 访问口令（部署后在 Render 控制台填）
+      - key: ACCESS_CODE
+        sync: false
       - key: CITATION_MIN_SIM
         value: "0.90"

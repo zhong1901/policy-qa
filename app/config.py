@@ -1,4 +1,4 @@
-﻿"""应用配置：用 pydantic-settings 从 .env 读取并做类型校验。
+"""应用配置：用 pydantic-settings 从 .env 读取并做类型校验。
 
 设计取舍：
 - 所有字段都给默认值，唯一例外是「数据库连接串」——没有它服务本身就没意义。
@@ -43,6 +43,9 @@ class Settings(BaseSettings):
 
     # ---- 前端跨域（本地开发用；生产同源部署可留空）----
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+
+    # ---- 访问口令（公网部署必填；本地留空则完全开放）----
+    access_code: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from app.auth import access_guard, router as auth_router
 from app.config import get_settings
 from app.db import close_pool, create_pool
 from app.routers import ask, docs, search
@@ -70,9 +71,13 @@ async def health() -> dict:
     return {"ok": True}
 
 
+app.include_router(auth_router)
 app.include_router(search.router)
 app.include_router(ask.router)
 app.include_router(docs.router)
+
+# 访问口令守卫：配置了 ACCESS_CODE 才生效，未配置时完全放行（本地开发）
+app.middleware("http")(access_guard)
 
 # 静态前端挂在最后：Starlette 按注册顺序匹配，/api/* 与 /health 会先命中，
 # 只有其余路径才落到静态目录。
