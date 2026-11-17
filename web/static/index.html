@@ -34,6 +34,12 @@
   }
   .brand-text{font-size:13px;color:var(--ink2);letter-spacing:.06em}
 
+  .topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:36px}
+  .nav-link{font-size:13px;color:var(--accent);text-decoration:none;
+            border:1px solid var(--accent-line);border-radius:8px;padding:6px 14px;
+            transition:background .15s}
+  .nav-link:hover{background:var(--accent-soft)}
+
   /* ── 首屏标题区 ── */
   h1{
     font-family:var(--serif); font-size:38px; line-height:1.25; font-weight:700;
@@ -233,9 +239,12 @@
 <body>
 <div class="wrap">
 
-  <div class="brand">
-    <div class="brand-mark">沪</div>
-    <div class="brand-text">上海人才与就业政策 · 可溯源问答</div>
+  <div class="topbar">
+    <div class="brand">
+      <div class="brand-mark">沪</div>
+      <div class="brand-text">上海人才与就业政策 · 可溯源问答</div>
+    </div>
+    <a class="nav-link" href="/check.html">资格自测 →</a>
   </div>
 
   <h1>问一句，给你能查证的答案</h1>

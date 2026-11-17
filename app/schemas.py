@@ -58,3 +58,49 @@ class AskResponse(BaseModel):
     as_of: date = Field(..., description="本次判定所依据的时间点")
     latency_ms: int = Field(0, description="服务端耗时（毫秒）")
     cached: bool = Field(False, description="是否命中答案缓存")
+
+
+# ────────────────── 资格自测 ──────────────────
+class EligibilityRequest(BaseModel):
+    """用户画像。字段与前端表单一一对应。"""
+
+    degree: str = Field("本科", description="博士/硕士/本科/大专/其他")
+    has_degree_cert: bool = Field(True, description="是否拿到学位证（双证）")
+    grad_year: int | None = Field(None, description="毕业年份")
+    is_shanghai_school: bool = Field(False, description="是否上海高校毕业")
+    social_months: int = Field(0, ge=0, le=600, description="社保累计月数")
+    resident_years: float = Field(0.0, ge=0, le=60, description="居住证持有年数")
+    title: str = Field("无", description="无/初级/中级/技师/副高/正高/高级")
+    tax_paid: bool = Field(True, description="是否依法缴纳个税")
+    employer: str = Field("一般企业", description="重点机构/事业单位/一般企业/暂无")
+    age: int = Field(25, ge=16, le=80)
+
+
+class EligibilityCheck(BaseModel):
+    label: str
+    state: str
+    detail: str = ""
+
+
+class EligibilityCitation(BaseModel):
+    clause_id: int
+    doc_title: str
+    clause_no: str | None = None
+    doc_no: str | None = None
+    quote: str
+    url: str | None = None
+
+
+class EligibilityVerdict(BaseModel):
+    key: str
+    name: str
+    result: str
+    checks: list[EligibilityCheck] = Field(default_factory=list)
+    citations: list[EligibilityCitation] = Field(default_factory=list)
+    note: str = ""
+    extra: dict = Field(default_factory=dict)
+
+
+class EligibilityResponse(BaseModel):
+    verdicts: list[EligibilityVerdict]
+    as_of: date
