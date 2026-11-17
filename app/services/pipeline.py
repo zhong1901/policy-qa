@@ -135,6 +135,17 @@ def _profile_from_dict(d: dict) -> Profile:
     return Profile(**{k: v for k, v in d.items() if k in fields})
 
 
+def _named_path(q: str) -> str | None:
+    """问题里点名了哪条落户路径。点名了就只答那一条。"""
+    if "居转户" in q or "居住证转" in q or "持证人员" in q:
+        return "juzhuanhu"
+    if "引进人才" in q or "人才引进" in q:
+        return "talent"
+    if "应届" in q or "毕业生落户" in q:
+        return "fresh"
+    return None
+
+
 async def ask_events(
     pool: asyncpg.Pool,
     settings: Settings,
@@ -176,6 +187,46 @@ async def ask_events(
     if profile and _wants_eligibility(question):
         yield ("status", {"stage": "eligibility", "text": "正在按你的档案逐条判定"})
         verdicts = evaluate(_profile_from_dict(profile))
+
+        # 如果问题点名了某条路径，就只答那一条。
+        # 否则会出现「问居转户、答应届生」这种错位。
+        target = _named_path(question)
+        if target:
+            v = next((x for x in verdicts if x.key == target), None)
+            if v is not None:
+                if v.result == "符合":
+                    concl = f"按你填写的情况，你符合「{v.name}」"
+                elif v.result == "待确认":
+                    concl = f"「{v.name}」还有信息需要确认"
+                else:
+                    concl = f"按你填写的情况，目前不符合「{v.name}」"
+                miss = [c for c in v.checks if c.state != "MET"]
+                resp = AskResponse(
+                    refused=False,
+                    conclusion=concl,
+                    conditions=[f"{c.label} —— {c.detail}" for c in v.checks
+                                if c.state != "满足" and c.detail],
+                    process=[v.note] if v.note else [],
+                    citations=[],
+                    confidence="high",
+                    note=f"（依据：{v.name}的申办条件）",
+                    as_of=as_of,
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                )
+                hits_map = await _fetch_hits(pool, v.clause_ids)
+                for i, cid in enumerate(v.clause_ids, 1):
+                    h = hits_map.get(cid)
+                    if h is None:
+                        continue
+                    resp.citations.append(Citation(
+                        ref=f"C{i}", quote=(h.content or "")[:160], clause_id=h.clause_id,
+                        doc_title=h.doc_title, clause_no=h.clause_no,
+                        effective_from=h.effective_from.isoformat() if h.effective_from else None,
+                        url=h.url))
+                resp = await finish(resp, v.clause_ids, "eligibility_route_one")
+                yield ("answer", resp.model_dump(mode="json"))
+                return
+
         s = summarize(verdicts)
         best = next((v for v in verdicts if v.key == s.best_key), None)
         clause_ids = best.clause_ids if best else []
