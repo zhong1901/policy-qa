@@ -206,11 +206,19 @@ async def main() -> None:
         await pool.close()
 
     s = summarize(results)
+    payload = json.dumps({"summary": s, "details": results},
+                         ensure_ascii=False, indent=2)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    (OUT_DIR / "eval_report.json").write_text(
-        json.dumps({"summary": s, "details": results}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    report_path = OUT_DIR / "eval_report.json"
+    try:
+        report_path.write_text(payload, encoding="utf-8")
+    except PermissionError:
+        # 某些环境（如本机以受限账户运行）不允许写项目目录。
+        # 评测本身已经跑完，不能因为写不了报告就白跑——降级到临时目录。
+        import tempfile
+        report_path = Path(tempfile.gettempdir()) / "eval_report.json"
+        report_path.write_text(payload, encoding="utf-8")
+        print(f"\n注意：项目目录不可写，报告已降级写入 {report_path}")
 
     print("\n" + "=" * 60)
     print(f"题目总数        {s['total']}（可答 {s['answerable']} / 应拒 {s['should_refuse']}）")

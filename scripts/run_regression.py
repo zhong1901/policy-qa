@@ -177,12 +177,12 @@ async def main() -> int:
             print(f"评测失败，退出码 {code}")
             return code
 
+    # 顺序很重要：**先和旧基线比，再把新结果存成基线**。
+    # 反过来写就成了「拿自己和自己比」，永远返回「没有退化」。
+    rc = await compare()
     if args.save:
         await save_baseline(args.save)
-        if not (args.run or True):
-            return 0
-
-    return await compare()
+    return rc
 
 
 if __name__ == "__main__":
