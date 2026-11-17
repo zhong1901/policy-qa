@@ -105,3 +105,56 @@ async def embed_query(text: str, settings: Settings) -> list[float]:
 
     logger.debug("embedding 完成，维度=%d", len(vector))
     return vector
+
+
+@retry(
+    retry=retry_if_exception(_is_retryable),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    reraise=True,
+)
+async def _post_embedding_batch(texts: list[str], settings: Settings) -> list[list[float]]:
+    url = f"{settings.embedding_base_url.rstrip('/')}/embeddings"
+    headers = {"Authorization": f"Bearer {settings.embedding_api_key}"}
+    payload = {"model": settings.embedding_model, "input": texts}
+    resp = await get_http_client().post(url, headers=headers, json=payload, timeout=120.0)
+    resp.raise_for_status()
+    data = resp.json()["data"]
+    # 个别服务不保证顺序，按 index 排序后再取
+    data = sorted(data, key=lambda d: d.get("index", 0))
+    return [d["embedding"] for d in data]
+
+
+async def embed_texts(
+    texts: list[str], settings: Settings, batch_size: int = 16
+) -> list[list[float]]:
+    """批量向量化。入库时用：一次请求带多条，比逐条快一个数量级。
+
+    为什么要分批：bge-m3 单请求有长度/条数上限，一次塞几百条会被拒或超时。
+    16 条一批是实测比较稳的值。
+    """
+    if not settings.embedding_api_key:
+        raise EmbeddingNotConfigured("未配置 EMBEDDING_API_KEY，无法向量化")
+
+    results: list[list[float]] = []
+    for i in range(0, len(texts), batch_size):
+        chunk = [t if t.strip() else "（空）" for t in texts[i:i + batch_size]]
+        try:
+            vecs = await _post_embedding_batch(chunk, settings)
+        except httpx.HTTPStatusError as exc:
+            raise EmbeddingFailed(
+                f"embedding 接口返回 {exc.response.status_code}: "
+                f"{exc.response.text[:200]}") from exc
+        except httpx.HTTPError as exc:
+            raise EmbeddingFailed(f"embedding 接口不可达: {exc}") from exc
+        except (KeyError, IndexError, TypeError) as exc:
+            raise EmbeddingFailed(f"embedding 返回格式异常: {exc}") from exc
+
+        if len(vecs) != len(chunk):
+            raise EmbeddingFailed(f"embedding 返回条数不符：{len(vecs)} != {len(chunk)}")
+        for v in vecs:
+            if len(v) != settings.embedding_dim:
+                raise EmbeddingFailed(
+                    f"embedding 维度不符：期望 {settings.embedding_dim}，实际 {len(v)}")
+        results.extend(vecs)
+    return results
