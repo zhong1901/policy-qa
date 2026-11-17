@@ -97,6 +97,10 @@ async def run_one(row, pool, settings) -> dict:
         "citation_precision": (
             len(cited & gold) / len(cited) if (cited and gold) else None
         ),
+        # 引用命中率：答案里是否包含标注的那一条。
+        # 比 precision 更贴合实际——一条答案合理引用多条条款时，
+        # 只有部分被标注，precision 会被系统性压低。
+        "citation_hit": bool(cited & gold) if (cited and gold) else None,
         "latency_ms": latency,
         "error": error,
     }
@@ -108,6 +112,7 @@ def summarize(results: list[dict]) -> dict:
 
     recalls = [r["recall"] for r in ans if r["recall"] is not None]
     cps = [r["citation_precision"] for r in results if r["citation_precision"] is not None]
+    chs = [r["citation_hit"] for r in results if r.get("citation_hit") is not None]
 
     answered = [r for r in ans if not r["refused"]]
     false_refusals = [r for r in ans if r["refused"]]
@@ -130,6 +135,9 @@ def summarize(results: list[dict]) -> dict:
         "should_refuse": len(ref),
         "recall_at_5": sum(recalls) / len(recalls) if recalls else None,
         "citation_precision": sum(cps) / len(cps) if cps else None,
+        "citation_hit_rate": (
+            sum(1 for x in chs if x) / len(chs) if chs else None
+        ),
         "answered": len(answered),
         "answer_rate": len(answered) / len(ans) if ans else None,
         "false_refusal": len(false_refusals),
@@ -207,7 +215,8 @@ async def main() -> None:
     print("\n" + "=" * 60)
     print(f"题目总数        {s['total']}（可答 {s['answerable']} / 应拒 {s['should_refuse']}）")
     print(f"Recall@5        {fmt_pct(s['recall_at_5'])}")
-    print(f"引用精确率       {fmt_pct(s['citation_precision'])}")
+    print(f"引用命中率       {fmt_pct(s.get('citation_hit_rate'))}   ← 答案里是否含标注条款")
+    print(f"引用精确率       {fmt_pct(s['citation_precision'])}   ← 引用中有多少是标注条款（一条答案引多条时偏低）")
     print(f"回答率          {fmt_pct(s['answer_rate'])}（{s['answered']}/{s['answerable']}）")
     print(f"误拒率          {fmt_pct(s['false_refusal_rate'])}（{s['false_refusal']} 题）")
     print(f"拒答准确率       {fmt_pct(s['refusal_accuracy'])}（{s['correct_refusal']}/{s['should_refuse']}）")
