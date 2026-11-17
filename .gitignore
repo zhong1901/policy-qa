@@ -1,0 +1,32 @@
+# ---- å¯†é’¥ä¸æœ¬åœ°ç¯å¢ƒï¼ˆç»å¯¹ä¸è¦æäº¤ï¼‰----
+.env
+.env.local
+*.key
+*.pem
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- è™šæ‹Ÿç¯å¢ƒ ----
+.venv/
+venv/
+env/
+
+# ---- IDE ----
+.idea/
+.vscode/
+*.iml
+
+# ---- æ“ä½œç³»ç»Ÿ ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Éè¼Æ²Î¿¼ÓÃµÄ skill£¬²»²ÎÓëÔËĞĞ£¬Ò²²»ĞèÒªÌá½»
+web/skills-oil-ui/
+

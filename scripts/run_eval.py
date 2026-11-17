@@ -1,0 +1,224 @@
+# -*- coding: utf-8 -*-
+r"""跑评测：对 qa_eval 表里的每条问题调用 /api/ask 的完整链路，算指标。
+
+指标定义：
+  Recall@5         = |gold ∩ 召回| / |gold|          —— 该找到的条款找到没有
+  引用精确率        = |引用 ∩ gold| / |引用|           —— 引用是不是指向正确条款
+  拒答准确率        = 正确拒答数 / 应拒答数            —— 该拒的拒了没有
+  误拒率            = 误拒数 / 应可答数                —— 该答的却被拒了
+  回答率            = 实际作答数 / 应可答数
+
+用法：
+    python scripts/run_eval.py --limit 5      # 先跑 5 条试试
+    python scripts/run_eval.py                # 全量
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import sys
+import time
+from collections import defaultdict
+from datetime import date
+from pathlib import Path
+from urllib.parse import urlparse
+
+import asyncpg
+from fastapi import HTTPException
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from app.config import get_settings            # noqa: E402
+from app.routers.ask import ask                # noqa: E402
+from app.schemas import AskRequest             # noqa: E402
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+OUT_DIR = Path(os.environ.get("EVAL_OUT") or (Path(__file__).resolve().parent.parent / "eval"))
+
+
+def connect_kwargs(dsn: str) -> dict:
+    host = (urlparse(dsn).hostname or "").lower()
+    kw: dict = {"command_timeout": 120}
+    if host not in ("localhost", "127.0.0.1", "::1", ""):
+        kw["ssl"] = "require"
+    return kw
+
+
+async def run_one(row, pool, settings) -> dict:
+    qid = row["qid"]
+    gold = set(row["gold_clause_ids"] or [])
+    expected = row["expected"]
+    t = time.time()
+    try:
+        resp = await ask(
+            AskRequest(question=row["question"], as_of=date.today()),
+            pool=pool,
+            settings=settings,
+        )
+        refused = resp.refused
+        cited = {c.clause_id for c in resp.citations}
+        latency = int((time.time() - t) * 1000)
+        error = None
+    except HTTPException as exc:
+        refused, cited, latency = False, set(), int((time.time() - t) * 1000)
+        error = f"HTTP {exc.status_code}: {exc.detail}"
+    except Exception as exc:  # noqa: BLE001
+        refused, cited, latency = False, set(), int((time.time() - t) * 1000)
+        error = f"{type(exc).__name__}: {exc}"
+
+    # 从 query_log 拿本次召回。必须按 question 精确匹配 + 取最新一条：
+    # 如果只按 id DESC 取全表最新，一旦某题中途 503 没写日志，就会读到上一题的行，
+    # 导致 recall 计算串题。
+    log = await pool.fetchrow(
+        "SELECT retrieved_ids FROM query_log WHERE question = $1 ORDER BY id DESC LIMIT 1",
+        row["question"],
+    )
+    retrieved = set(log["retrieved_ids"] or []) if log else set()
+
+    hit = gold & retrieved if gold else set()
+    return {
+        "qid": qid,
+        "stratum": row["stratum"],
+        "question": row["question"],
+        "expected": expected,
+        "refused": refused,
+        "gold": sorted(gold),
+        "retrieved": sorted(retrieved),
+        "hit": sorted(hit),
+        "recall": (len(hit) / len(gold)) if gold else None,
+        "cited": sorted(cited),
+        "citation_precision": (
+            len(cited & gold) / len(cited) if (cited and gold) else None
+        ),
+        "latency_ms": latency,
+        "error": error,
+    }
+
+
+def summarize(results: list[dict]) -> dict:
+    ans = [r for r in results if r["expected"] == "答"]
+    ref = [r for r in results if r["expected"] == "拒"]
+
+    recalls = [r["recall"] for r in ans if r["recall"] is not None]
+    cps = [r["citation_precision"] for r in results if r["citation_precision"] is not None]
+
+    answered = [r for r in ans if not r["refused"]]
+    false_refusals = [r for r in ans if r["refused"]]
+    correct_refusals = [r for r in ref if r["refused"]]
+
+    by_stratum = defaultdict(lambda: {"n": 0, "recall": [], "answered": 0, "correct_ref": 0})
+    for r in results:
+        s = by_stratum[r["stratum"]]
+        s["n"] += 1
+        if r["recall"] is not None:
+            s["recall"].append(r["recall"])
+        if r["expected"] == "答" and not r["refused"]:
+            s["answered"] += 1
+        if r["expected"] == "拒" and r["refused"]:
+            s["correct_ref"] += 1
+
+    return {
+        "total": len(results),
+        "answerable": len(ans),
+        "should_refuse": len(ref),
+        "recall_at_5": sum(recalls) / len(recalls) if recalls else None,
+        "citation_precision": sum(cps) / len(cps) if cps else None,
+        "answered": len(answered),
+        "answer_rate": len(answered) / len(ans) if ans else None,
+        "false_refusal": len(false_refusals),
+        "false_refusal_rate": len(false_refusals) / len(ans) if ans else None,
+        "correct_refusal": len(correct_refusals),
+        "refusal_accuracy": len(correct_refusals) / len(ref) if ref else None,
+        "avg_latency_ms": sum(r["latency_ms"] for r in results) / len(results),
+        "errors": sum(1 for r in results if r["error"]),
+        "by_stratum": {
+            k: {
+                "n": v["n"],
+                "recall": (sum(v["recall"]) / len(v["recall"])) if v["recall"] else None,
+                "answered": v["answered"],
+                "correct_refusal": v["correct_ref"],
+            }
+            for k, v in by_stratum.items()
+        },
+    }
+
+
+def fmt_pct(x):
+    return f"{x*100:.1f}%" if x is not None else "—"
+
+
+async def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--only-with-gold", action="store_true",
+                    help="只跑有 gold_clause_ids 的题（用于快速冒烟）")
+    ap.add_argument("--sleep", type=float, default=0.3)
+    args = ap.parse_args()
+
+    dsn = os.getenv("DATABASE_URL")
+    if not dsn:
+        sys.exit("没有 DATABASE_URL")
+
+    settings = get_settings()
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3, **connect_kwargs(dsn))
+
+    try:
+        rows = await pool.fetch(
+            "SELECT qid, stratum, question, expected, gold_clause_ids "
+            "FROM qa_eval "
+            + ("WHERE gold_clause_ids IS NOT NULL AND array_length(gold_clause_ids,1) > 0 " if args.only_with_gold else "")
+            + "ORDER BY qid"
+        )
+        if args.limit:
+            rows = rows[: args.limit]
+        print(f"共 {len(rows)} 题，模型={settings.llm_model}，阈值={settings.refusal_threshold}\n")
+
+        results = []
+        for i, row in enumerate(rows, 1):
+            r = await run_one(row, pool, settings)
+            results.append(r)
+            flag = "✓" if (
+                (r["expected"] == "答" and not r["refused"])
+                or (r["expected"] == "拒" and r["refused"])
+            ) else "✗"
+            tag = "拒" if r["refused"] else "答"
+            print(f"  [{i}/{len(rows)}] {flag} {r['qid']} {tag} "
+                  f"recall={fmt_pct(r['recall'])} {r['latency_ms']}ms", flush=True)
+            if r["error"]:
+                print(f"        ERROR {r['error'][:120]}", flush=True)
+            await asyncio.sleep(args.sleep)
+    finally:
+        await pool.close()
+
+    s = summarize(results)
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    (OUT_DIR / "eval_report.json").write_text(
+        json.dumps({"summary": s, "details": results}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    print("\n" + "=" * 60)
+    print(f"题目总数        {s['total']}（可答 {s['answerable']} / 应拒 {s['should_refuse']}）")
+    print(f"Recall@5        {fmt_pct(s['recall_at_5'])}")
+    print(f"引用精确率       {fmt_pct(s['citation_precision'])}")
+    print(f"回答率          {fmt_pct(s['answer_rate'])}（{s['answered']}/{s['answerable']}）")
+    print(f"误拒率          {fmt_pct(s['false_refusal_rate'])}（{s['false_refusal']} 题）")
+    print(f"拒答准确率       {fmt_pct(s['refusal_accuracy'])}（{s['correct_refusal']}/{s['should_refuse']}）")
+    print(f"平均耗时        {s['avg_latency_ms']:.0f}ms")
+    print(f"异常            {s['errors']} 题")
+    print("\n分层：")
+    for k, v in s["by_stratum"].items():
+        print(f"  {k:<6} n={v['n']:<3} recall={fmt_pct(v['recall'])} "
+              f"作答={v['answered']} 正确拒={v['correct_refusal']}")
+    print(f"\n报告 -> {OUT_DIR / 'eval_report.json'}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
