@@ -118,6 +118,12 @@ async def main() -> int:
     ap.add_argument("--source", default=None, help="来源标识，用于数量校验")
     ap.add_argument("--force", action="store_true",
                     help="跳过数量校验（仅演练用，正式更新不要开）")
+    ap.add_argument("--no-count-guard", action="store_true",
+                    help="增量抓取用：增量清单天然比全库小，"
+                         "数量守卫应放在抓取阶段（列表页成功率），不在这里比总数")
+    ap.add_argument("--incremental", action="store_true",
+                    help="这份清单是「只抓新文档」的增量结果："
+                         "不会把清单外的文档判为消失，也不做全库数量校验")
     args = ap.parse_args()
 
     dsn = os.getenv("DATABASE_URL")
@@ -145,10 +151,14 @@ async def main() -> int:
             ap.print_help()
             return 2
 
-        res = diff(current, incoming)
+        res = diff(current, incoming, infer_gone=not args.incremental)
 
         # ── 数量校验：抓得太少就中止，绝不拿空数据覆盖好数据 ──
-        if not args.force:
+        if args.incremental:
+            print("\n数量校验：已跳过（增量清单，守卫在抓取阶段按列表页成功率执行）")
+        elif args.no_count_guard or args.force:
+            print("\n数量校验：已跳过")
+        else:
             last = await last_ok_count(conn, args.source)
             guard = check_count(len(incoming), last)
             print("\n数量校验：" + ("✓ " if guard.ok else "✗ ") + guard.reason)
@@ -158,8 +168,6 @@ async def main() -> int:
                                  ok=False, aborted_reason=guard.reason)
                 print("\n已中止，未写入任何变更。")
                 return 1
-        else:
-            print("\n数量校验：已用 --force 跳过")
 
         print("\n" + "=" * 58)
         print("检测结果：" + summarize_diff(res))

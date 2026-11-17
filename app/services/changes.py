@@ -66,8 +66,15 @@ async def load_current(pool) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def diff(current: list[dict], incoming: list[IncomingDoc]) -> DiffResult:
-    """比对库里现状与源站清单。纯函数，方便单测。"""
+def diff(current: list[dict], incoming: list[IncomingDoc],
+         infer_gone: bool = True) -> DiffResult:
+    """比对库里现状与源站清单。纯函数，方便单测。
+
+    infer_gone 必须慎用：
+    - 全站清单（全量抓取）→ True，清单里没有的就是下线了；
+    - 增量清单（只抓新文档）→ False，**清单里没有只代表这次没抓，不代表消失**。
+      把增量清单当全站清单用，会把整库都判成「消失」，这是真实踩过的坑。
+    """
     cur = {d["source_url"]: d for d in current if d.get("source_url")}
     inc = {i.url: i for i in incoming if i.url}
 
@@ -88,10 +95,11 @@ def diff(current: list[dict], incoming: list[IncomingDoc]) -> DiffResult:
                 "old_len": old.get("body_len"),
             })
 
-    for url, doc in cur.items():
-        if url not in inc:
-            res.gone.append({"url": url, "title": doc.get("title"),
-                             "doc_key": doc.get("doc_key")})
+    if infer_gone:
+        for url, doc in cur.items():
+            if url not in inc:
+                res.gone.append({"url": url, "title": doc.get("title"),
+                                 "doc_key": doc.get("doc_key")})
 
     # 改版判定：大量 gone 与大量 new 同时出现，且标题大量重合
     if res.gone and res.new:
