@@ -5,8 +5,12 @@
 但生成与校验还要 6–20 秒。把流程改成一个会 yield 中间事件的生成器，
 流式接口直接转发事件；普通接口则只取最后那个 answer 事件。
 
-好处是不复制业务逻辑——四道闸、缓存、写日志只有一份实现，
-两条路径不可能出现「流式版漏了某个校验」这种问题。
+多轮与记忆（本轮新增）：
+- 短期：从 turns 表取最近 3 轮，用于查询改写和注入 prompt；
+- 改写：把「那需要什么材料」补全成独立问题再检索，否则召回全是噪声；
+- 长期：user_profiles 里的画像是用户主动填写的，不是模型猜的；
+- 缓存：**只在没有历史时启用**。同一个问题在不同上下文里含义不同，
+  带历史还命中缓存等于答错。
 
 事件类型：
   status    进度提示（stage + 文案）
@@ -16,24 +20,27 @@
 """
 import json
 import logging
+import re
 import time
 from datetime import date
 from typing import AsyncIterator
 
 import asyncpg
-from fastapi import HTTPException
 
 from app import cache
 from app.config import Settings
 from app.schemas import AskResponse, Citation, Material
+from app.services import memory
+from app.services.eligibility import Profile, evaluate, summarize
 from app.services.embed import EmbeddingFailed, EmbeddingNotConfigured
 from app.services.generate import (
     GenerationFailed,
     LLMNotConfigured,
     generate,
     regenerate_with_feedback,
+    rewrite_query,
 )
-from app.services.retrieve import ClauseHit, hybrid_retrieve
+from app.services.retrieve import ClauseHit, _fetch_hits, hybrid_retrieve
 from app.services.verify import verify
 
 logger = logging.getLogger(__name__)
@@ -107,25 +114,99 @@ def _clause_brief(h: ClauseHit) -> dict:
     }
 
 
+# ── 意图路由：判断「我能不能落户」这类问题该交给规则引擎 ──
+# 用正则而不是字符串包含：「我现在能申请居转户吗」里「我」和「能」隔了「现在」，
+# 纯字符串匹配会漏掉；而「我能申请租房补贴吗」又能正确排除（不是落户问题）。
+_SELF_RE = re.compile(r"我[^。？?！!]{0,6}(能|可以|够|符合|是否)")
+_PATH_HINTS = ("落户", "户口", "居转户", "引进人才", "应届")
+
+
+def _wants_eligibility(q: str) -> bool:
+    """「问自己」+「问落户」同时出现，才交给规则引擎。
+
+    宁可漏判也不要误判：把「我能申请租房补贴吗」错送进规则引擎，
+    会得到「三条落户路径都不满足」这种驴唇不对马嘴的答案。
+    """
+    return bool(_SELF_RE.search(q)) and any(p in q for p in _PATH_HINTS)
+
+
+def _profile_from_dict(d: dict) -> Profile:
+    fields = Profile.__dataclass_fields__
+    return Profile(**{k: v for k, v in d.items() if k in fields})
+
+
 async def ask_events(
     pool: asyncpg.Pool,
     settings: Settings,
     question: str,
     as_of: date,
+    session_id: str = "",
 ) -> AsyncIterator[tuple[str, dict]]:
     """主流程。yield (事件类型, 数据)；最后一次必定是 answer 或 error。"""
     started = time.perf_counter()
+
+    # ── 记忆：短期历史 + 长期画像 ──
+    history = await memory.get_history(pool, session_id) if session_id else []
+    profile = await memory.get_profile(pool, session_id) if session_id else None
+    profile_text = memory.profile_to_text(profile) if profile else ""
+
+    # 有历史就不走缓存：同一个问题在不同上下文里含义不同，命中缓存等于答错
+    use_cache = settings.cache_enabled and not history
     ckey = cache.make_key(question, as_of.isoformat())
 
+    async def remember(resp: AskResponse) -> None:
+        if not session_id:
+            return
+        await memory.ensure_session(pool, session_id)
+        await memory.append_turn(pool, session_id, "user", question)
+        await memory.append_turn(pool, session_id, "assistant",
+                                 resp.conclusion or "", resp.model_dump(mode="json"))
+
     async def finish(resp: AskResponse, ids: list[int], reason: str | None) -> AskResponse:
-        if settings.cache_enabled:
+        if use_cache:
             await cache.put(pool, ckey, question, as_of,
                             resp.model_dump(mode="json"), ids)
         await _log_query(pool, question, as_of, ids, resp, reason)
+        await remember(resp)
         return resp
 
-    # ---- 关 ⓪：缓存 ----
-    if settings.cache_enabled:
+    # ---- 关 ⓪：意图路由 ----
+    # 有画像 + 问的是「我能不能落户」→ 交给规则引擎，不走 RAG。
+    # 这类问题要的是判定而不是检索，走 RAG 只会得到「未找到依据」。
+    if profile and _wants_eligibility(question):
+        yield ("status", {"stage": "eligibility", "text": "正在按你的档案逐条判定"})
+        verdicts = evaluate(_profile_from_dict(profile))
+        s = summarize(verdicts)
+        best = next((v for v in verdicts if v.key == s.best_key), None)
+        clause_ids = best.clause_ids if best else []
+        hits_map = await _fetch_hits(pool, clause_ids)
+        cits: list[Citation] = []
+        for i, cid in enumerate(clause_ids, 1):
+            h = hits_map.get(cid)
+            if h is None:
+                continue
+            cits.append(Citation(
+                ref=f"C{i}", quote=(h.content or "")[:160], clause_id=h.clause_id,
+                doc_title=h.doc_title, clause_no=h.clause_no,
+                effective_from=h.effective_from.isoformat() if h.effective_from else None,
+                url=h.url))
+        resp = AskResponse(
+            refused=False,
+            conclusion=s.headline,
+            conditions=list(s.gaps),
+            process=list(s.suggestions),
+            citations=cits,
+            confidence="high",
+            note=(s.detail + ("　" + s.points_note if s.points_note else "")).strip(),
+            as_of=as_of,
+            latency_ms=int((time.perf_counter() - started) * 1000),
+        )
+        resp = await finish(resp, clause_ids, "eligibility_route")
+        yield ("answer", resp.model_dump(mode="json"))
+        return
+
+    # ---- 关 ⓪b：缓存（仅首轮）----
+    if use_cache:
         hit = await cache.get(pool, ckey, settings.cache_ttl_days)
         if hit is not None:
             data = dict(hit["answer"])
@@ -133,14 +214,23 @@ async def ask_events(
             data["latency_ms"] = int((time.perf_counter() - started) * 1000)
             resp = AskResponse(**data)
             await _log_query(pool, question, as_of, hit["retrieved_ids"], resp, "cache_hit")
+            await remember(resp)
             yield ("answer", resp.model_dump(mode="json"))
             return
+
+    # ---- 多轮：改写追问 ----
+    search_query = question
+    if history:
+        yield ("status", {"stage": "rewriting", "text": "正在理解你的追问"})
+        search_query = await rewrite_query(question, history, settings)
+        if search_query != question:
+            yield ("status", {"stage": "rewritten", "text": f"理解为：{search_query}"})
 
     # ---- 检索 ----
     yield ("status", {"stage": "retrieving", "text": "正在检索政策条款"})
     meta: dict = {}
     try:
-        hits = await hybrid_retrieve(pool, question, as_of, settings,
+        hits = await hybrid_retrieve(pool, search_query, as_of, settings,
                                      limit=settings.top_k_final, meta=meta)
     except EmbeddingNotConfigured as exc:
         yield ("error", {"detail": str(exc), "status": 503})
@@ -161,12 +251,12 @@ async def ask_events(
 
     ids = [h.clause_id for h in hits]
 
-    # 检索一出来就先推给前端：这是「方案三」的全部意义
     if hits:
         yield ("retrieval", {
             "clauses": [_clause_brief(h) for h in hits],
             "top_sim": round(hits[0].vector_sim, 3) if hits[0].vector_sim is not None else None,
             "elapsed_ms": int((time.perf_counter() - started) * 1000),
+            "rewritten": search_query if search_query != question else None,
         })
 
     # ---- 闸 ①：空 ----
@@ -176,9 +266,6 @@ async def ask_events(
         return
 
     # ---- 闸 ②：证据强度 ----
-    # 这里有个曾经真实存在的漏洞：向量路挂了就没有 vector_sim，
-    # 旧写法 `if top_sim is not None and ...` 会直接短路，等于降级时什么都能答。
-    # 现在按「有没有向量信号」分成两条判据。
     if degraded:
         kw_score = meta.get("kw_top_score", 0)
         if kw_score < settings.degraded_min_keyword_hits:
@@ -202,7 +289,7 @@ async def ask_events(
     # ---- 生成 ----
     yield ("status", {"stage": "generating", "text": "正在生成答案并核对出处"})
     try:
-        answer = await generate(question, hits, settings)
+        answer = await generate(question, hits, settings, profile_text, history)
     except LLMNotConfigured as exc:
         yield ("error", {"detail": str(exc), "status": 503})
         return
@@ -222,7 +309,8 @@ async def ask_events(
     if not ok:
         logger.info("首次校验失败，带问题重试：%s", problems)
         try:
-            answer = await regenerate_with_feedback(question, hits, settings, problems)
+            answer = await regenerate_with_feedback(
+                question, hits, settings, problems, profile_text, history)
             ok, problems2 = verify(answer, hits, settings)
             if not ok:
                 resp = await finish(

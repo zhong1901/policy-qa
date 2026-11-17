@@ -88,18 +88,33 @@ def build_context(hits: list[ClauseHit]) -> list[str]:
     return blocks
 
 
-def build_messages(question: str, hits: list[ClauseHit]) -> list[dict]:
+def build_messages(
+    question: str,
+    hits: list[ClauseHit],
+    profile_text: str = "",
+    history: list[dict] | None = None,
+) -> list[dict]:
     context = "\n\n".join(build_context(hits))
-    user = f"""【参考资料】
-{context}
+    blocks: list[str] = []
 
-【用户问题】
-{question}
+    if profile_text:
+        blocks.append(
+            "【用户已知情况】（由用户主动填写，可直接使用；没写的不要替用户假设）\n"
+            + profile_text
+        )
+    if history:
+        lines = []
+        for h in history:
+            who = "用户" if h.get("role") == "user" else "助手"
+            lines.append(f"{who}：{h['content'][:150]}")
+        blocks.append("【对话历史】（用于理解指代与追问，不要复述）\n" + "\n".join(lines))
 
-请严格按规则输出 JSON。"""
+    blocks.append(f"【参考资料】\n{context}")
+    blocks.append(f"【用户问题】\n{question}\n\n请严格按规则输出 JSON。")
+
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user},
+        {"role": "user", "content": "\n\n".join(blocks)},
     ]
 
 
@@ -222,7 +237,13 @@ async def _call_llm(messages: list[dict], settings: Settings) -> str:
     return content
 
 
-async def generate(question: str, hits: list[ClauseHit], settings: Settings) -> dict:
+async def generate(
+    question: str,
+    hits: list[ClauseHit],
+    settings: Settings,
+    profile_text: str = "",
+    history: list[dict] | None = None,
+) -> dict:
     """生成结构化答案。失败抛 GenerationFailed，由路由层转 503。"""
     if not hits:
         return dict(EMPTY_ANSWER)
@@ -232,7 +253,7 @@ async def generate(question: str, hits: list[ClauseHit], settings: Settings) -> 
             "未配置 LLM_API_KEY，无法生成答案；请在 .env 中填入后重启服务"
         )
 
-    messages = build_messages(question, hits)
+    messages = build_messages(question, hits, profile_text, history)
     try:
         raw = await _call_llm(messages, settings)
     except httpx.HTTPStatusError as exc:
@@ -251,13 +272,18 @@ async def generate(question: str, hits: list[ClauseHit], settings: Settings) -> 
 
 
 async def regenerate_with_feedback(
-    question: str, hits: list[ClauseHit], settings: Settings, problems: list[str]
+    question: str,
+    hits: list[ClauseHit],
+    settings: Settings,
+    problems: list[str],
+    profile_text: str = "",
+    history: list[dict] | None = None,
 ) -> dict:
     """校验失败后带着问题重试一次。
 
     把 verify 发现的问题回灌给模型，比单纯重试有效得多。
     """
-    messages = build_messages(question, hits)
+    messages = build_messages(question, hits, profile_text, history)
     messages.append({
         "role": "user",
         "content": (
@@ -267,3 +293,65 @@ async def regenerate_with_feedback(
     })
     raw = await _call_llm(messages, settings)
     return normalize(parse_json(raw), hits)
+
+
+# ────────────────── 多轮：查询改写 ──────────────────
+REWRITE_SYSTEM = """你在为一个政策问答系统做「查询改写」。
+
+任务：根据对话历史，把用户的最新问题改写成一条**能独立拿去检索**的完整问题。
+
+规则：
+1. 只补全指代（"那""这个""它"）和省略（"材料呢"），不要添加历史里没有的信息。
+2. 如果最新问题本身已经完整（能脱离上下文理解），**原样输出**，不要改写。
+3. 只输出改写后的问题本身：不要解释、不要引号、不要标点以外的符号。
+4. 不超过 60 个字。"""
+
+
+async def rewrite_query(
+    question: str, history: list[dict] | None, settings: Settings
+) -> str:
+    """把追问改写成可独立检索的问题。
+
+    这是多轮 RAG 的核心：用户问「那需要什么材料」，直接拿这句去检索，
+    召回的全是噪声——必须先补全成「居转户落户需要什么材料」。
+
+    安全策略：任何异常、空结果、超长结果，一律回退原文。
+    改写只在后台用于检索，展示给用户的永远是原问题。
+    """
+    if not history or not settings.llm_api_key:
+        return question
+
+    convo = "\n".join(
+        f"{'用户' if h.get('role') == 'user' else '助手'}：{h['content'][:120]}"
+        for h in history
+    )
+    payload = {
+        "model": settings.llm_model,
+        "messages": [
+            {"role": "system", "content": REWRITE_SYSTEM},
+            {"role": "user", "content": f"【对话历史】\n{convo}\n\n【最新问题】\n{question}"},
+        ],
+        "max_tokens": 300,
+        "temperature": 0,
+    }
+    try:
+        resp = await get_http_client().post(
+            f"{settings.llm_base_url.rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {settings.llm_api_key}"},
+            json=payload,
+            timeout=settings.llm_timeout,
+        )
+        resp.raise_for_status()
+        content = (resp.json()["choices"][0]["message"].get("content") or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("查询改写失败，回退原文：%s", exc)
+        return question
+
+    rewritten = content.splitlines()[0].strip().strip("「」\"'。 ") if content else ""
+    # 改写结果不可信时一律用原文：空、过短、过长、或者模型开始解释
+    if not rewritten or len(rewritten) < 4 or len(rewritten) > 60:
+        return question
+    if rewritten == question:
+        return question
+    logger.info("查询改写：%s → %s", question[:24], rewritten[:40])
+    return rewritten

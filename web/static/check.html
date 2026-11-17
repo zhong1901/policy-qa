@@ -68,6 +68,14 @@
   .s-gaps li::before{content:"—";position:absolute;left:0;color:var(--ink3)}
   .s-sug{margin:14px 0 0;font-size:13px;color:var(--ink3);line-height:1.7}
 
+  .savebar{margin-top:14px;background:var(--card);border:1px dashed var(--accent-line);
+           border-radius:var(--radius);padding:14px 18px;display:flex;align-items:center;
+           justify-content:space-between;gap:14px;font-size:13.5px;color:var(--ink2)}
+  .savebar button{background:var(--accent);color:#fff;border:0;border-radius:7px;
+                  padding:8px 16px;font-size:13px;font-family:inherit;font-weight:600;
+                  cursor:pointer;white-space:nowrap}
+  .savebar button:disabled{opacity:.6;cursor:default}
+
   .vcard{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
          padding:22px 26px;margin-bottom:14px}
   .vcard.ok{border-left:3px solid var(--ok)}
@@ -233,6 +241,17 @@ const $ = s => document.querySelector(s);
 const out = $("#out");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
+/* 与问答页共用同一个 session id，这样「档案」在两边都生效 */
+function getSid(){
+  let s = localStorage.getItem("pq_sid");
+  if (!s){
+    s = "s-" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    localStorage.setItem("pq_sid", s);
+  }
+  return s;
+}
+const SID = getSid();
+
 const ICON = { "满足": ["m","✓"], "不满足": ["x","✗"], "无法判断": ["u","?"], "计分": ["s","·"] };
 const BADGE = { "符合": "ok", "不符合": "no", "待确认": "warn" };
 
@@ -279,8 +298,15 @@ function summaryCard(s){
   </div>`;
 }
 
+function saveBar(){
+  return `<div class="savebar">
+    <span>把这次填写存为「我的档案」，回到问答时会自动带上，不用重复描述自己的情况</span>
+    <button id="saveprof">保存档案</button>
+  </div>`;
+}
+
 function render(d){
-  out.innerHTML = summaryCard(d.summary) + d.verdicts.map(verdictCard).join("");
+  out.innerHTML = summaryCard(d.summary) + saveBar() + d.verdicts.map(verdictCard).join("");
 }
 
 function formData(){
@@ -339,6 +365,24 @@ function closeDrawer(){
 out.addEventListener("click", e => {
   const b = e.target.closest("[data-cid]");
   if (b) openClause(b.dataset.cid);
+});
+
+/* 保存画像：整条覆盖，不合并 */
+out.addEventListener("click", async e => {
+  const btn = e.target.closest("#saveprof");
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = "保存中";
+  try{
+    const r = await fetch(`/api/session/${SID}/profile`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(formData())
+    });
+    btn.textContent = r.ok ? "已保存 ✓" : "保存失败";
+  }catch(err){
+    btn.textContent = "保存失败";
+  }
 });
 $("#dc").addEventListener("click", closeDrawer);
 $("#scrim").addEventListener("click", closeDrawer);

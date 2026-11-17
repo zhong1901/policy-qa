@@ -41,6 +41,10 @@ class AskRequest(BaseModel):
     as_of: date | None = Field(
         None, description="按哪个时间点判定政策有效性，默认今天"
     )
+    session_id: str | None = Field(
+        None, max_length=64,
+        description="会话 id。带上它才有短期记忆（多轮追问）与长期画像；不带就是单轮问答",
+    )
 
 
 class AskResponse(BaseModel):
@@ -58,6 +62,7 @@ class AskResponse(BaseModel):
     as_of: date = Field(..., description="本次判定所依据的时间点")
     latency_ms: int = Field(0, description="服务端耗时（毫秒）")
     cached: bool = Field(False, description="是否命中答案缓存")
+    note: str = Field("", description="补充说明（如资格判定的细节）")
 
 
 # ────────────────── 资格自测 ──────────────────

@@ -107,6 +107,7 @@
     border-radius:4px; padding:1px 4px; cursor:pointer; margin-left:2px;
   }
   .conclusion .cite-inline:hover{background:var(--accent); color:#fff}
+  .note-line{margin:10px 0 0;font-size:13px;color:var(--ink3);line-height:1.7}
 
   section.block{margin-top:26px; padding-top:22px; border-top:1px solid var(--line)}
   section.block:first-of-type{margin-top:22px}
@@ -244,7 +245,10 @@
       <div class="brand-mark">沪</div>
       <div class="brand-text">上海人才与就业政策 · 可溯源问答</div>
     </div>
-    <a class="nav-link" href="/check.html">资格自测 →</a>
+    <div style="display:flex;gap:8px">
+      <button class="nav-link" id="newchat" style="background:transparent;cursor:pointer;font-family:inherit">新对话</button>
+      <a class="nav-link" href="/check.html">资格自测 →</a>
+    </div>
   </div>
 
   <h1>问一句，给你能查证的答案</h1>
@@ -293,6 +297,18 @@
 const $ = (s) => document.querySelector(s);
 const out = $("#out");
 const ta = $("#q");
+
+/* ── 会话 id：短期记忆（多轮）与长期画像都挂在它上面 ──
+   存 localStorage，换标签页仍然连续；点「新对话」会清掉服务端记忆并换新 id */
+function getSid(){
+  let s = localStorage.getItem("pq_sid");
+  if (!s){
+    s = "s-" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    localStorage.setItem("pq_sid", s);
+  }
+  return s;
+}
+let SID = getSid();
 
 function esc(s){
   return String(s ?? "").replace(/[&<>"']/g, c => (
@@ -402,6 +418,7 @@ function renderAnswer(d){
   parts.push(`<div class="card">
     <div class="eyebrow">结论</div>
     <p class="conclusion">${markCitations(d.conclusion)}</p>
+    ${d.note ? `<p class="note-line">${esc(d.note)}</p>` : ""}
   </div>`);
 
   if (d.conflicts && d.conflicts.length){
@@ -492,7 +509,7 @@ async function ask(){
     const resp = await fetch("/api/ask/stream", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({question: q})
+      body: JSON.stringify({question: q, session_id: SID})
     });
 
     if (!resp.ok){
@@ -586,6 +603,16 @@ document.addEventListener("click", e => {
 $("#d-close").addEventListener("click", closeDrawer);
 $("#scrim").addEventListener("click", closeDrawer);
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
+
+/* 新对话：清掉服务端记忆（对话 + 画像），换一个新 session id */
+$("#newchat").addEventListener("click", async () => {
+  try { await fetch(`/api/session/${SID}`, { method: "DELETE" }); } catch (e) {}
+  localStorage.removeItem("pq_sid");
+  SID = getSid();
+  ta.value = "";
+  renderEmpty();
+  ta.focus();
+});
 
 renderEmpty();
 

@@ -67,6 +67,26 @@ CREATE TABLE IF NOT EXISTS answer_cache (
     created_at    TIMESTAMPTZ DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_cache_time ON answer_cache (created_at DESC);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id          TEXT PRIMARY KEY,
+    created_at  TIMESTAMPTZ DEFAULT now(),
+    updated_at  TIMESTAMPTZ DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS turns (
+    id          BIGSERIAL PRIMARY KEY,
+    session_id  TEXT NOT NULL,
+    role        TEXT NOT NULL,
+    content     TEXT NOT NULL,
+    answer      JSONB,
+    created_at  TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_turns_session ON turns (session_id, id DESC);
+CREATE TABLE IF NOT EXISTS user_profiles (
+    session_id  TEXT PRIMARY KEY,
+    profile     JSONB NOT NULL,
+    updated_at  TIMESTAMPTZ DEFAULT now()
+);
 """
 
 

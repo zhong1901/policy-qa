@@ -43,7 +43,7 @@ async def ask_stream(
 
     async def gen():
         try:
-            async for typ, data in ask_events(pool, settings, question, as_of):
+            async for typ, data in ask_events(pool, settings, question, as_of, req.session_id or ""):
                 yield _sse(typ, data)
         except Exception as exc:  # noqa: BLE001
             # 流已经开始，没法再改 HTTP 状态码，只能作为 error 事件推给前端
@@ -74,7 +74,7 @@ async def ask(
         raise HTTPException(status_code=422, detail="问题不能为空白")
     as_of = req.as_of or date.today()
 
-    async for typ, data in ask_events(pool, settings, question, as_of):
+    async for typ, data in ask_events(pool, settings, question, as_of, req.session_id or ""):
         if typ == "answer":
             return AskResponse(**data)
         if typ == "error":
