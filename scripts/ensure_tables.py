@@ -82,6 +82,19 @@ CREATE TABLE IF NOT EXISTS turns (
     created_at  TIMESTAMPTZ DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_turns_session ON turns (session_id, id DESC);
+CREATE TABLE IF NOT EXISTS crawl_runs (
+    id            BIGSERIAL PRIMARY KEY,
+    started_at    TIMESTAMPTZ DEFAULT now(),
+    finished_at   TIMESTAMPTZ,
+    source        TEXT,
+    docs_found    INT DEFAULT 0,
+    docs_stored   INT DEFAULT 0,
+    ok            BOOLEAN DEFAULT FALSE,
+    aborted_reason TEXT,
+    detail        JSONB
+);
+CREATE INDEX IF NOT EXISTS idx_crawl_runs_time ON crawl_runs (started_at DESC);
+
 CREATE TABLE IF NOT EXISTS change_log (
     id          BIGSERIAL PRIMARY KEY,
     detected_at TIMESTAMPTZ DEFAULT now(),

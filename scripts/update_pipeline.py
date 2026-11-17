@@ -39,6 +39,9 @@ sys.path.insert(0, str(ROOT))
 from app.services.changes import (  # noqa: E402
     CHANGED, GONE, NEW, IncomingDoc, diff, load_current, summarize_diff,
 )
+from app.services.crawl_safety import (  # noqa: E402
+    check_count, finish_run, last_ok_count, start_run,
+)
 
 load_dotenv(ROOT / ".env")
 
@@ -112,6 +115,9 @@ async def main() -> int:
     ap.add_argument("--simulate", type=int, metavar="N", help="模拟 N 条变更（演练）")
     ap.add_argument("--regress", action="store_true", help="检测后跑回归")
     ap.add_argument("--no-write", action="store_true", help="不写 change_log（只演练）")
+    ap.add_argument("--source", default=None, help="来源标识，用于数量校验")
+    ap.add_argument("--force", action="store_true",
+                    help="跳过数量校验（仅演练用，正式更新不要开）")
     args = ap.parse_args()
 
     dsn = os.getenv("DATABASE_URL")
@@ -140,6 +146,21 @@ async def main() -> int:
             return 2
 
         res = diff(current, incoming)
+
+        # ── 数量校验：抓得太少就中止，绝不拿空数据覆盖好数据 ──
+        if not args.force:
+            last = await last_ok_count(conn, args.source)
+            guard = check_count(len(incoming), last)
+            print("\n数量校验：" + ("✓ " if guard.ok else "✗ ") + guard.reason)
+            if not guard.ok:
+                run_id = await start_run(conn, args.source or "all")
+                await finish_run(conn, run_id, docs_found=len(incoming),
+                                 ok=False, aborted_reason=guard.reason)
+                print("\n已中止，未写入任何变更。")
+                return 1
+        else:
+            print("\n数量校验：已用 --force 跳过")
+
         print("\n" + "=" * 58)
         print("检测结果：" + summarize_diff(res))
         print("=" * 58)
@@ -162,6 +183,14 @@ async def main() -> int:
             print(f"\n已写入 change_log：{n} 条（reviewed=false，待人工复核）")
         elif res.is_clean:
             print("\n没有变化，无需处理。")
+
+        # 只有真实抓取才登记为「本次成功」，演练不污染数量基线
+        if args.incoming:
+            run_id = await start_run(conn, args.source or "all")
+            await finish_run(
+                conn, run_id, docs_found=len(incoming), ok=True,
+                detail={"new": len(res.new), "changed": len(res.changed),
+                        "gone": len(res.gone)})
 
         if res.changed or res.new:
             print("\n下一步：重新导入受影响的文档 → 跑回归确认没把已答对的题搞坏。")
