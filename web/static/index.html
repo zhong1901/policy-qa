@@ -204,6 +204,18 @@
   .empty p{margin:0; font-size:13.5px; color:var(--ink2); line-height:1.7}
   .empty .num{font-family:var(--mono); color:var(--accent); font-weight:600}
 
+  /* ── 流式过程区 ── */
+  .stage{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--ink3);margin-bottom:14px}
+  .spin{width:12px;height:12px;border:2px solid var(--line2);border-top-color:var(--accent);
+        border-radius:50%;animation:sp .8s linear infinite;flex:0 0 auto}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .retrieval{border:1px solid var(--line);border-radius:var(--radius);background:var(--card);
+             padding:16px 20px;margin-bottom:16px}
+  .retrieval .rh{font-size:11px;letter-spacing:.1em;color:var(--ink3);font-weight:600;margin-bottom:10px}
+  .ret-item{font-size:13px;color:var(--ink2);padding:7px 0;border-bottom:1px dashed var(--line)}
+  .ret-item:last-child{border-bottom:0;padding-bottom:0}
+  .ret-item .rid{font-family:var(--mono);font-size:11px;color:var(--ink3);margin-right:8px}
+
   .foot{
     max-width:800px; margin:0 auto; padding:0 24px 40px;
     font-size:11.5px; color:var(--ink3); line-height:1.8;
@@ -305,6 +317,50 @@ function renderEmpty(){
          应拒答的题 <span class="num">100%</span> 拒掉。</p>
     </div>
   </div>`;
+}
+
+/* ── 流式过程区 ── */
+function renderLive(stageText){
+  out.innerHTML = `<div id="live">
+    <div class="stage"><span class="spin"></span><span id="stage-text">${esc(stageText)}</span></div>
+    <div id="retrieval"></div>
+  </div>`;
+}
+
+function setStage(text){
+  const el = document.querySelector("#stage-text");
+  if (el) el.textContent = text;
+}
+
+function renderRetrieval(d){
+  const box = document.querySelector("#retrieval");
+  if (!box) return;
+  const sim = (d.top_sim === null || d.top_sim === undefined)
+    ? "" : `　最相关 <b>${d.top_sim}</b>`;
+  box.innerHTML = `<div class="retrieval">
+    <div class="rh">已检索 ${d.clauses.length} 条政策条款${sim}　·　${d.elapsed_ms} ms</div>
+    ${d.clauses.map(c => `<div class="ret-item">
+      <span class="rid">${esc(c.clause_no || "—")}</span>${esc(c.doc_title)}
+      <div style="color:var(--ink3);font-size:12px;margin-top:2px">${esc(c.snippet)}…</div>
+    </div>`).join("")}
+  </div>`;
+}
+
+/* 解析一条 SSE 块 */
+function handleSSE(chunk){
+  let evt = "message", data = "";
+  for (const line of chunk.split("\n")){
+    if (line.startsWith("event:")) evt = line.slice(6).trim();
+    else if (line.startsWith("data:")) data += line.slice(5).trim();
+  }
+  if (!data) return;
+  let payload;
+  try { payload = JSON.parse(data); } catch { return; }
+
+  if (evt === "status") setStage(payload.text || "处理中");
+  else if (evt === "retrieval") renderRetrieval(payload);
+  else if (evt === "answer") payload.refused ? renderRefused(payload) : renderAnswer(payload);
+  else if (evt === "error") renderError(payload.detail || "服务异常");
 }
 
 function skeleton(){
@@ -417,27 +473,46 @@ function renderError(msg){
 async function ask(){
   const q = ta.value.trim();
   if (!q) { ta.focus(); return; }
-  $("#go").disabled = true;
-  $("#go").textContent = "检索中";
-  skeleton();
+
+  const btn = $("#go");
+  btn.disabled = true;
+  btn.textContent = "检索中";
+  renderLive("正在检索政策条款");
+
   try{
-    const r = await fetch("/api/ask", {
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({question:q})
+    const resp = await fetch("/api/ask/stream", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({question: q})
     });
-    if (!r.ok){
-      const t = await r.text();
-      renderError(`接口返回 ${r.status}${t ? "：" + t.slice(0,120) : ""}`);
+
+    if (!resp.ok){
+      const t = await resp.text();
+      renderError(`接口返回 ${resp.status}${t ? "：" + t.slice(0,120) : ""}`);
       return;
     }
-    const d = await r.json();
-    d.refused ? renderRefused(d) : renderAnswer(d);
+
+    // 逐块读取 SSE：status / retrieval 先到，answer 最后到
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+
+    for (;;){
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0){
+        const chunk = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        handleSSE(chunk);
+      }
+    }
   }catch(e){
     renderError("网络请求失败：" + e.message);
   }finally{
-    $("#go").disabled = false;
-    $("#go").textContent = "提问";
+    btn.disabled = false;
+    btn.textContent = "提问";
   }
 }
 

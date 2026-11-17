@@ -1,17 +1,16 @@
 """FastAPI 入口：创建 app 实例，注册中间件、生命周期和路由。"""
 import logging
-import time
 from contextlib import asynccontextmanager
-
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.auth import access_guard, router as auth_router
+from app.auth import LOGIN_HTML, _sign, router as auth_router
 from app.config import get_settings
 from app.db import close_pool, create_pool
+from app.middleware import AccessControlMiddleware, TimingMiddleware
 from app.routers import ask, docs, search
 from app.services.embed import close_http_client
 
@@ -30,7 +29,6 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        # 放在 finally 里：即使运行期间抛异常，也要把资源放掉
         await close_pool()
         await close_http_client()
         logger.info("服务已关闭")
@@ -47,22 +45,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-@app.middleware("http")
-async def log_latency(request: Request, call_next):
-    """记录每次请求的耗时并写入响应头。
-
-    X-Process-Time-Ms 既方便本地 curl 看延迟，也是后面统计 P95 的原始数据来源。
-    """
-    started = time.perf_counter()
-    response = await call_next(request)
-    elapsed_ms = (time.perf_counter() - started) * 1000
-    response.headers["X-Process-Time-Ms"] = f"{elapsed_ms:.0f}"
-    logger.info(
-        "%s %s -> %s %.0fms",
-        request.method, request.url.path, response.status_code, elapsed_ms,
-    )
-    return response
+# 注意顺序：add_middleware 是「后加的在最外层」。
+# 所以先加口令守卫，再加计时器 —— 计时器才会把守卫自身也算进去。
+app.add_middleware(AccessControlMiddleware, login_html=LOGIN_HTML, sign=_sign)
+app.add_middleware(TimingMiddleware)
 
 
 @app.get("/health")
@@ -75,9 +61,6 @@ app.include_router(auth_router)
 app.include_router(search.router)
 app.include_router(ask.router)
 app.include_router(docs.router)
-
-# 访问口令守卫：配置了 ACCESS_CODE 才生效，未配置时完全放行（本地开发）
-app.middleware("http")(access_guard)
 
 # 静态前端挂在最后：Starlette 按注册顺序匹配，/api/* 与 /health 会先命中，
 # 只有其余路径才落到静态目录。

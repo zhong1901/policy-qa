@@ -3,6 +3,8 @@
     name: policy-qa
     runtime: python
     plan: free
+    # 与 Supabase 同区（us-east-1 / Virginia），否则每次查库要跨整个美国
+    region: virginia
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
