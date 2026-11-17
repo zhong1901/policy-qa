@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     # 改用「关键词命中词数」作为证据强度，低于此值直接拒答。
     degraded_min_keyword_hits: int = 2
 
+    # 生成温度。政策问答要的是可复现，不是文采，所以默认就压得很低。
+    # 评测脚本会把它覆盖成 0，用来区分「真退化」和「模型随机抖动」。
+    llm_temperature: float = 0.1
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

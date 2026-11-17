@@ -35,12 +35,22 @@ if not REPORT.exists():
 load_dotenv(ROOT / ".env")
 
 # 指标允许的下降幅度。超过就算退化。
+#
+# 阈值不是拍的，是按实测噪声定的：
+# 同一份数据、temperature=0，连跑两次，12 道拒答题里有 2 道行为不同（16.7%）。
+# 也就是说拒答准确率天然有 ±17% 的抖动——阈值定 5% 会把噪声当成退化，
+# 天天报警，最后没人看。阈值必须高于噪声底噪，否则告警等于没有。
+#
+# 召回是确定性的（检索无随机性），所以可以卡紧。
 THRESHOLDS = {
     "recall_at_5": 0.03,
     "citation_hit_rate": 0.05,
-    "refusal_accuracy": 0.05,
-    "answer_rate": 0.05,
+    "refusal_accuracy": 0.15,
+    "answer_rate": 0.10,
 }
+
+# 除了比例，还要求绝对题数变化达到这个数，避免小样本上的比例放大。
+MIN_ABS_CHANGE = 2
 
 METRIC_LABEL = {
     "recall_at_5": "Recall@5",

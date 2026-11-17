@@ -204,7 +204,7 @@ async def _call_llm(messages: list[dict], settings: Settings) -> str:
         "response_format": {"type": "json_object"},
         # 推理模型的 reasoning_tokens 会先吃掉 max_tokens，给少了 content 会是空字符串
         "max_tokens": settings.llm_max_tokens,
-        "temperature": 0.1,
+        "temperature": settings.llm_temperature,
     }
     resp = await get_http_client().post(
         url,

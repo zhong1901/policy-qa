@@ -51,27 +51,40 @@ def connect_kwargs(dsn: str) -> dict:
     return kw
 
 
-async def run_one(row, pool, settings) -> dict:
+async def run_one(row, pool, settings, repeat: int = 1) -> dict:
     qid = row["qid"]
     gold = set(row["gold_clause_ids"] or [])
     expected = row["expected"]
     t = time.time()
-    try:
-        resp = await ask(
-            AskRequest(question=row["question"], as_of=date.today()),
-            pool=pool,
-            settings=settings,
-        )
-        refused = resp.refused
-        cited = {c.clause_id for c in resp.citations}
-        latency = int((time.time() - t) * 1000)
-        error = None
-    except HTTPException as exc:
-        refused, cited, latency = False, set(), int((time.time() - t) * 1000)
-        error = f"HTTP {exc.status_code}: {exc.detail}"
-    except Exception as exc:  # noqa: BLE001
-        refused, cited, latency = False, set(), int((time.time() - t) * 1000)
-        error = f"{type(exc).__name__}: {exc}"
+
+    # 多次采样取多数：实测同一份数据在 temperature=0 下跑两次，
+    # 12 题里有 2 题行为不同（16.7%）——模型本身不是逐位确定的。
+    # 单次采样测出来的「退化」有三分之一可能只是抖了一下，所以拒答判定取多数票。
+    votes: list[bool] = []
+    cited: set[int] = set()
+    error = None
+    for _ in range(max(1, repeat)):
+        try:
+            resp = await ask(
+                AskRequest(question=row["question"], as_of=date.today()),
+                pool=pool,
+                settings=settings,
+            )
+            votes.append(resp.refused)
+            cited |= {c.clause_id for c in resp.citations}
+        except HTTPException as exc:
+            error = f"HTTP {exc.status_code}: {exc.detail}"
+            break
+        except Exception as exc:  # noqa: BLE001
+            error = f"{type(exc).__name__}: {exc}"
+            break
+
+    if votes:
+        # 平票时按「作答」处理：宁可算作答了，也不要因为随机性把拒答当成稳定行为
+        refused = votes.count(True) > len(votes) / 2
+    else:
+        refused = False
+    latency = int((time.time() - t) * 1000)
 
     # 从 query_log 拿本次召回。必须按 question 精确匹配 + 取最新一条：
     # 如果只按 id DESC 取全表最新，一旦某题中途 503 没写日志，就会读到上一题的行，
@@ -168,13 +181,22 @@ async def main() -> None:
     ap.add_argument("--only-with-gold", action="store_true",
                     help="只跑有 gold_clause_ids 的题（用于快速冒烟）")
     ap.add_argument("--sleep", type=float, default=0.3)
+    ap.add_argument("--temperature", type=float, default=0.0,
+                    help="生成温度。评测默认 0，把模型随机性从指标里剔掉——"
+                         "否则测出来的「退化」可能只是抖了一下")
+    ap.add_argument("--repeat", type=int, default=1,
+                    help="每题重复采样几次，取多数票。实测同一数据两次运行有 16.7% 的题会翻转，"
+                         "做回归门禁时建议至少 3 次")
+    ap.add_argument("--stratum", default=None,
+                    help="只跑某一层（如 拒答），用于低成本测噪声")
     args = ap.parse_args()
 
     dsn = os.getenv("DATABASE_URL")
     if not dsn:
         sys.exit("没有 DATABASE_URL")
 
-    settings = get_settings()
+    # 覆盖温度：只影响本次评测进程，不动生产默认值
+    settings = get_settings().model_copy(update={"llm_temperature": args.temperature})
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3, **connect_kwargs(dsn))
 
     try:
@@ -184,13 +206,16 @@ async def main() -> None:
             + ("WHERE gold_clause_ids IS NOT NULL AND array_length(gold_clause_ids,1) > 0 " if args.only_with_gold else "")
             + "ORDER BY qid"
         )
+        if args.stratum:
+            rows = [r for r in rows if r["stratum"] == args.stratum]
         if args.limit:
             rows = rows[: args.limit]
-        print(f"共 {len(rows)} 题，模型={settings.llm_model}，阈值={settings.refusal_threshold}\n")
+        print(f"共 {len(rows)} 题，模型={settings.llm_model}，"
+              f"阈值={settings.refusal_threshold}，temperature={args.temperature}\n")
 
         results = []
         for i, row in enumerate(rows, 1):
-            r = await run_one(row, pool, settings)
+            r = await run_one(row, pool, settings, args.repeat)
             results.append(r)
             flag = "✓" if (
                 (r["expected"] == "答" and not r["refused"])
