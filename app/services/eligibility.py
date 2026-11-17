@@ -47,6 +47,7 @@ class Check:
     label: str
     state: str
     detail: str = ""
+    hard: bool = False   # True 表示「过期就永久不符合」（如应届身份），不能算「努力一下就行」
 
 
 @dataclass
@@ -95,18 +96,20 @@ def evaluate(p: Profile) -> list[Verdict]:
 
 # ────────────────────── 居转户 ──────────────────────
 def _check_juzhuanhu(p: Profile) -> Verdict:
+    ry = p.resident_years
+    sm = p.social_months
     checks = [
         Check("持有《上海市居住证》满 7 年",
-              MET if p.resident_years >= 7 else MISS,
-              f"你填写的是 {p.resident_years:g} 年"),
+              MET if ry >= 7 else MISS,
+              f"你填写 {ry:g} 年" + (f"，还差 {7 - ry:g} 年" if ry < 7 else "")),
         Check("持证期间参加本市职工社会保险满 7 年",
-              MET if p.social_months >= 84 else MISS,
-              f"你填写的是 {p.social_months} 个月"),
+              MET if sm >= 84 else MISS,
+              f"你填写 {sm} 个月" + (f"，还差 {84 - sm} 个月" if sm < 84 else "")),
         Check("被评聘为中级及以上职称，或具有技师以上职业资格",
               MET if _TITLE_RANK.get(p.title, 0) >= 2 else MISS,
-              f"你填写的是「{p.title}」"),
+              f"你填写「{p.title}」" + ("" if _TITLE_RANK.get(p.title, 0) >= 2 else "，需要中级职称或技师以上")),
         Check("持证期间依法在本市缴纳个人所得税",
-              MET if p.tax_paid else MISS, ""),
+              MET if p.tax_paid else MISS, "" if p.tax_paid else "需提供完税证明"),
     ]
     return _verdict("juzhuanhu", "居转户（居住证转常住户口）", checks, [7371],
                     note="四项须同时满足；符合激励条件（如社保基数达到一定倍数）可缩短年限，本工具未覆盖。")
@@ -169,20 +172,22 @@ def _check_fresh_grad(p: Profile) -> Verdict:
     checks = [
         Check("属于应届普通高校毕业生（毕业当年或次年）",
               MET if is_fresh else MISS,
-              f"你填写的毕业年份是 {p.grad_year}" if p.grad_year else "未填写毕业年份"),
+              f"你填写的毕业年份是 {p.grad_year}" if p.grad_year else "未填写毕业年份",
+              hard=True),   # 一次性窗口：过了就永久不符合，不能算「努力一下就行」
         Check("非上海生源（上海生源本身无需办理落户）",
               MET if not p.is_shanghai_school else UNSURE,
               "上海高校毕业不等于上海生源，需以户籍为准" if p.is_shanghai_school else ""),
         Check("已落实符合条件的上海用人单位",
               MET if p.employer in ("重点机构", "事业单位", "一般企业") else MISS,
-              f"你填写的是「{p.employer}」"),
+              f"你填写的是「{p.employer}」" + ("" if p.employer != "暂无" else "，需先签约上海单位")),
+        # 这一项永远无法从表单判断，但必须显式列出来，
+        # 否则「待确认」会变成一个没有解释的结论。
+        Check("用人单位资质与当年评分标准",
+              UNSURE,
+              "取决于单位是否在当年受理名录内、以及评分是否达到标准分，需由单位人事确认"),
     ]
-    if is_fresh and p.employer not in ("暂无",):
-        result = "待确认"
-    elif not is_fresh:
-        result = "不符合"
-    else:
-        result = "待确认"
+    # 三条都满足也不代表一定能办：还要看单位资质和当年打分，所以最高只给「待确认」
+    result = "不符合" if any(c.state == MISS for c in checks) else "待确认"
 
     return _verdict("fresh", "应届毕业生落户", checks, [7554], result=result,
                     note="近年政策每年调整，且需用人单位一次性提交材料、由单位发起申请。"
@@ -207,7 +212,9 @@ def _check_points(p: Profile) -> Verdict:
         Check("缴纳社保年限", SCORE,
               f"{p.social_months} 个月 → {social_s} 分（每满 1 年 3 分）"),
         Check("总积分达到标准分值 120 分",
-              MET if total >= 120 else MISS, f"当前估算 {total} 分"),
+              MET if total >= 120 else MISS,
+              (f"当前估算 {total} 分，达标" if total >= 120
+               else f"当前估算 {total} 分，还差 {120 - total} 分")),
     ]
     return _verdict("points", "居住证积分达标（120 分）", checks, [7462, 7469],
                     result="符合" if total >= 120 else "不符合",
@@ -230,3 +237,105 @@ def _verdict(key: str, name: str, checks: list[Check], clause_ids: list[int],
             result = "符合"
     return Verdict(key=key, name=name, result=result, checks=checks,
                    clause_ids=clause_ids, note=note, extra=extra or {})
+
+
+# ────────────────────── 总结 ──────────────────────
+@dataclass
+class Summary:
+    """一句话回答「我到底能不能落户」。
+
+    四条路径是「依据」，这个才是「答案」——用户填完表想看的是这句。
+    """
+
+    verdict: str                                    # 可以申请 / 可能有戏 / 暂时不符合
+    headline: str                                   # 一句话结论
+    detail: str = ""                                # 补充说明
+    best_key: str | None = None
+    best_name: str | None = None
+    gaps: list[str] = field(default_factory=list)   # 还差什么
+    alternatives: list[str] = field(default_factory=list)
+    suggestions: list[str] = field(default_factory=list)
+    points_note: str = ""                           # 积分单独说明（它不是落户路径）
+
+
+def _met(v: Verdict) -> int:
+    return sum(1 for c in v.checks if c.state == MET)
+
+
+def summarize(verdicts: list[Verdict]) -> Summary:
+    # 只把真正的「落户路径」放进结论。
+    # 居住证积分达标 ≠ 落户：积分 120 分用于子女教育、医保等公共服务，
+    # 早期版本把它算成一条落户路径，导致「刚毕业没工作」也被判成"可以申请"，是错的。
+    paths = [v for v in verdicts if v.key != "points"]
+    points = next((v for v in verdicts if v.key == "points"), None)
+
+    note = ""
+    if points is not None:
+        sc = points.extra.get("score")
+        if sc is not None:
+            note = (f"顺带一提：你的居住证积分估算 {sc} 分，"
+                    + ("已达标——但积分用于子女教育等公共服务，不等于能落户。"
+                       if sc >= 120 else f"距离达标线 120 分还差 {120 - sc} 分。"))
+
+    eligible = [v for v in paths if v.result == "符合"]
+    maybe = [v for v in paths if v.result == "待确认"]
+
+    # ① 至少有一条落户路径走得通
+    if eligible:
+        best = max(eligible, key=_met)
+        others = [v.name for v in eligible if v.key != best.key]
+        detail = "可以直接准备材料了。"
+        if others:
+            detail = f"另外「{'」「'.join(others)}」也符合，可以按办理难度选一条。"
+        return Summary(
+            verdict="可以申请",
+            headline=f"你符合「{best.name}」",
+            detail=detail,
+            best_key=best.key,
+            best_name=best.name,
+            alternatives=others,
+            suggestions=[f"先看「{best.name}」的申办材料和受理窗口，再决定走哪条。"],
+            points_note=note,
+        )
+
+    # ② 有路径但关键信息无法判断
+    if maybe:
+        best = max(maybe, key=_met)
+        gaps = [f"{c.label} —— {c.detail}" for c in best.checks if c.state == UNSURE and c.detail]
+        return Summary(
+            verdict="可能有戏",
+            headline=f"最可能的是「{best.name}」，但有信息需要确认",
+            detail="下面这几项表单判断不了，需要你或单位人事补充确认：",
+            best_key=best.key,
+            best_name=best.name,
+            gaps=gaps,
+            suggestions=["建议直接问单位人事：本单位是否属于可申办落户的重点机构。"],
+            points_note=note,
+        )
+
+    # ③ 一条都不满足 —— 不武断挑「最接近」，把三条的差距都摆出来。
+    # 之前用「满足项占比」选最接近，会把已经永久过期的应届身份判成最接近，误导人。
+    lines: list[str] = []
+    for v in paths:
+        miss = [c for c in v.checks if c.state == MISS]
+        if not miss:
+            continue
+        hard = [c for c in miss if c.hard]
+        if hard:
+            lines.append(f"{v.name}：已不可能（{hard[0].label}）")
+        else:
+            lines.append(f"{v.name}：还差 {len(miss)} 项 —— {miss[0].label}")
+    soft = [v for v in paths if all(c.state != MISS or not c.hard for c in v.checks)]
+    best = soft[0] if soft else paths[0]
+
+    return Summary(
+        verdict="暂时不符合",
+        headline="目前三条落户路径都还不满足",
+        detail="各自的差距如下，看哪条补起来更快：",
+        best_key=best.key,
+        best_name=best.name,
+        gaps=lines,
+        suggestions=["补齐上面提到的条件后再回来测一次；"
+                     "带「已不可能」的那条不用再考虑。"],
+        points_note=note,
+    )

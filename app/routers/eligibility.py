@@ -16,9 +16,10 @@ from app.schemas import (
     EligibilityCheck,
     EligibilityRequest,
     EligibilityResponse,
+    EligibilitySummary,
     EligibilityVerdict,
 )
-from app.services.eligibility import Profile, evaluate
+from app.services.eligibility import Profile, evaluate, summarize
 
 logger = logging.getLogger(__name__)
 
@@ -82,4 +83,14 @@ async def eligibility(
         ))
 
     logger.info("资格自测完成：%s", {v.key: v.result for v in verdicts})
-    return EligibilityResponse(verdicts=out, as_of=date.today())
+    s = summarize(verdicts)
+    return EligibilityResponse(
+        summary=EligibilitySummary(
+            verdict=s.verdict, headline=s.headline, detail=s.detail,
+            best_key=s.best_key, best_name=s.best_name, gaps=s.gaps,
+            alternatives=s.alternatives, suggestions=s.suggestions,
+            points_note=s.points_note,
+        ),
+        verdicts=out,
+        as_of=date.today(),
+    )

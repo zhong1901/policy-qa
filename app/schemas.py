@@ -101,6 +101,21 @@ class EligibilityVerdict(BaseModel):
     extra: dict = Field(default_factory=dict)
 
 
+class EligibilitySummary(BaseModel):
+    """一句话回答「我到底能不能落户」。放在结果最上面。"""
+
+    verdict: str
+    headline: str
+    detail: str = ""
+    best_key: str | None = None
+    best_name: str | None = None
+    gaps: list[str] = Field(default_factory=list)
+    alternatives: list[str] = Field(default_factory=list)
+    suggestions: list[str] = Field(default_factory=list)
+    points_note: str = ""
+
+
 class EligibilityResponse(BaseModel):
+    summary: EligibilitySummary
     verdicts: list[EligibilityVerdict]
     as_of: date
