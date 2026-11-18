@@ -88,13 +88,16 @@ async def _log_query(
     retrieved_ids: list[int],
     resp: AskResponse,
     refused_reason: str | None,
+    session_id: str = "",
+    visitor_hash: str = "",
 ) -> None:
     """写查询日志。失败只记 warning，绝不影响用户拿到答案。"""
     try:
         await pool.execute(
             """INSERT INTO query_log
-               (question, as_of, retrieved_ids, answer, refused, latency_ms, refused_reason)
-               VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+               (question, as_of, retrieved_ids, answer, refused, latency_ms,
+                refused_reason, session_id, visitor_hash)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
             question,
             as_of,
             retrieved_ids,
@@ -102,6 +105,8 @@ async def _log_query(
             resp.refused,
             resp.latency_ms,
             refused_reason,
+            session_id or None,
+            visitor_hash or None,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("写 query_log 失败（不影响返回）：%s", exc)
@@ -155,6 +160,7 @@ async def ask_events(
     question: str,
     as_of: date,
     session_id: str = "",
+    visitor_hash: str = "",
 ) -> AsyncIterator[tuple[str, dict]]:
     """主流程。yield (事件类型, 数据)；最后一次必定是 answer 或 error。"""
     started = time.perf_counter()
@@ -180,7 +186,8 @@ async def ask_events(
         if use_cache:
             await cache.put(pool, ckey, question, as_of,
                             resp.model_dump(mode="json"), ids)
-        await _log_query(pool, question, as_of, ids, resp, reason)
+        await _log_query(pool, question, as_of, ids, resp, reason,
+                         session_id, visitor_hash)
         await remember(resp)
         return resp
 
@@ -267,7 +274,8 @@ async def ask_events(
             data["cached"] = True
             data["latency_ms"] = int((time.perf_counter() - started) * 1000)
             resp = AskResponse(**data)
-            await _log_query(pool, question, as_of, hit["retrieved_ids"], resp, "cache_hit")
+            await _log_query(pool, question, as_of, hit["retrieved_ids"], resp,
+                            "cache_hit", session_id, visitor_hash)
             await remember(resp)
             yield ("answer", resp.model_dump(mode="json"))
             return

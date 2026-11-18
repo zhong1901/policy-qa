@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     # 评测脚本会把它覆盖成 0，用来区分「真退化」和「模型随机抖动」。
     llm_temperature: float = 0.1
 
+    # 统计页口令（和访问口令分开）。留空则统计页不开放。
+    stats_key: str = ""
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

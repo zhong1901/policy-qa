@@ -11,7 +11,7 @@ from app.auth import LOGIN_HTML, _sign, router as auth_router
 from app.config import get_settings
 from app.db import close_pool, create_pool
 from app.middleware import AccessControlMiddleware, TimingMiddleware
-from app.routers import ask, docs, eligibility, search, session
+from app.routers import ask, docs, eligibility, search, session, stats, track
 from app.services.embed import close_http_client
 
 logging.basicConfig(
@@ -62,6 +62,8 @@ app.include_router(search.router)
 app.include_router(ask.router)
 app.include_router(eligibility.router)
 app.include_router(session.router)
+app.include_router(track.router)
+app.include_router(stats.router)
 app.include_router(docs.router)
 
 # 静态前端挂在最后：Starlette 按注册顺序匹配，/api/* 与 /health 会先命中，

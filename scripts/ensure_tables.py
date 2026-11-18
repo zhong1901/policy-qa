@@ -95,6 +95,17 @@ CREATE TABLE IF NOT EXISTS crawl_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_crawl_runs_time ON crawl_runs (started_at DESC);
 
+CREATE TABLE IF NOT EXISTS visits (
+    id           BIGSERIAL PRIMARY KEY,
+    visited_at   TIMESTAMPTZ DEFAULT now(),
+    path         TEXT,
+    visitor_hash TEXT,
+    referer_host TEXT,
+    mobile       BOOLEAN DEFAULT FALSE
+);
+CREATE INDEX IF NOT EXISTS idx_visits_time ON visits (visited_at DESC);
+CREATE INDEX IF NOT EXISTS idx_visits_visitor ON visits (visitor_hash);
+
 CREATE TABLE IF NOT EXISTS change_log (
     id          BIGSERIAL PRIMARY KEY,
     detected_at TIMESTAMPTZ DEFAULT now(),

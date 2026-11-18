@@ -17,7 +17,7 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 COOKIE_NAME = "pq_access"
-PUBLIC_PATHS = {"/health", "/auth"}
+PUBLIC_PATHS = {"/health", "/auth", "/stats"}
 
 
 class TimingMiddleware:

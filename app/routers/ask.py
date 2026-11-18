@@ -12,13 +12,14 @@ import logging
 from datetime import date
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from app.config import Settings, get_settings
 from app.db import get_pool
 from app.schemas import AskRequest, AskResponse
 from app.services.pipeline import ask_events
+from app.services.tracking import visitor_hash as _vh
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,8 @@ async def ask_stream(
 
     async def gen():
         try:
-            async for typ, data in ask_events(pool, settings, question, as_of, req.session_id or ""):
+            async for typ, data in ask_events(pool, settings, question, as_of,
+                              req.session_id or "", _vh(request)):
                 yield _sse(typ, data)
         except Exception as exc:  # noqa: BLE001
             # 流已经开始，没法再改 HTTP 状态码，只能作为 error 事件推给前端
@@ -65,6 +67,7 @@ async def ask_stream(
 @router.post("/ask", response_model=AskResponse)
 async def ask(
     req: AskRequest,
+    request: Request,
     pool: asyncpg.Pool = Depends(get_pool),
     settings: Settings = Depends(get_settings),
 ) -> AskResponse:
@@ -74,7 +77,8 @@ async def ask(
         raise HTTPException(status_code=422, detail="问题不能为空白")
     as_of = req.as_of or date.today()
 
-    async for typ, data in ask_events(pool, settings, question, as_of, req.session_id or ""):
+    async for typ, data in ask_events(pool, settings, question, as_of,
+                              req.session_id or "", _vh(request)):
         if typ == "answer":
             return AskResponse(**data)
         if typ == "error":
