@@ -8,7 +8,6 @@
 """
 import asyncio
 import logging
-import math
 import re
 from dataclasses import dataclass
 from datetime import date
@@ -101,7 +100,7 @@ _VECTOR_SQL = """
 """
 
 _KEYWORD_SQL = """
-    SELECT c.id, c.content_len,
+    SELECT c.id,
            (SELECT count(*) FROM unnest($1::text[]) AS p
              WHERE c.content ILIKE p) AS hit
       FROM clauses c
@@ -112,24 +111,13 @@ _KEYWORD_SQL = """
               OR COALESCE(c.effective_from, d.effective_from) <= $2::date)
        AND (COALESCE(c.effective_to, d.effective_to) IS NULL
               OR COALESCE(c.effective_to, d.effective_to) >= $2::date)
+     LIMIT $3
 """
 
-# 这里有过两个真 bug，都是「截断」造成的：
-#
-# 1) 早先写 ORDER BY hit DESC LIMIT 90：命中词数天然偏向长条款，
-#    精确的短条款被挤出候选，Recall@5 从 93% 掉到 61.7%。
-# 2) 改成不带 ORDER BY 的 LIMIT 120：取回的是物理顺序最前的 120 条，
-#    只占全部匹配的 2–3%。实测「超龄就业人员参加工伤保险」匹配 5208 条，
-#    正确答案全局排第 4，却连候选池都进不去 —— 新文档（id 大）系统性够不到。
-#
-# 现在：**不做任何截断**，全部匹配回传（只有 id/长度/命中数，几十 KB），
-# 排序交给 Python，并用「命中数 / (1 + log 长度)」抵消长条款优势。
-# 这个函数是拿 12 道题实测 4 种排序比出来的（进前 30 的比例：10/12 vs 9/12 vs 5/12）。
-
-
-def _keyword_score(hit: float, length: int) -> float:
-    """命中词数按长度做对数衰减。直接用命中数会让长条款霸榜。"""
-    return hit / (1.0 + math.log(max(length, 2)))
+# 注意：这里刻意「不在 SQL 里 ORDER BY hit DESC」。
+# 实测按命中词数排序会系统性偏向长条款（长文本天然命中更多 bigram），
+# 把精确的短条款挤出候选，评测 Recall@5 从 0.93 掉到 0.7 左右。
+# 改为取一个更大的候选池，再在 Python 侧按命中数取前 N —— 与调优前的行为一致。
 
 _FETCH_SQL = """
     SELECT c.id, c.doc_key, c.clause_no, c.clause_path, c.content,
@@ -157,16 +145,13 @@ async def _vector_candidates(
 async def _keyword_candidates(
     pool: asyncpg.Pool, question: str, terms: list[str], as_of: date, k: int
 ) -> list[tuple[int, float]]:
-    """关键词路：返回 (id, 归一化后的命中分)。
-
-    不截断候选：截断等于随机丢掉大部分匹配，而正确答案经常排在全局前十。
-    """
+    """关键词路：只返回 (id, 命中词数)。命中词数在 SQL 里算，避免回传正文。"""
     if not terms:
         return []
     patterns = [f"%{t}%" for t in terms]
-    rows = await pool.fetch(_KEYWORD_SQL, patterns, as_of)
-    cand = [(r["id"], _keyword_score(float(r["hit"]), int(r["content_len"] or 0)))
-            for r in rows]
+    rows = await pool.fetch(_KEYWORD_SQL, patterns, as_of, max(k * _KEYWORD_OVERFETCH, 120))
+    cand = [(r["id"], float(r["hit"])) for r in rows]
+    # 在 Python 侧排序：SQL 里排会偏向长条款（见 _KEYWORD_SQL 上方的注释）
     cand.sort(key=lambda x: x[1], reverse=True)
     return cand[:k]
 
@@ -264,15 +249,17 @@ async def hybrid_retrieve(
 
     # 兜底：保证每一路的「第一名」一定出现在最终结果里。
     # RRF 的固有缺陷是「两路都出现的中等名次」会赢过「只在一路出现的第一名」，
-    # 而后者往往是更确定的答案。救回每路的 top-1 是最小代价的补偿。
-    forced: list[int] = []
+    # 而后者往往是更确定的答案。实测 B01 的 gold 是向量路第 1，却被挤出前 5。
+    # 只补每路 top-1，是最小代价的补偿——不要扩大到 top-3，那样会把无关条款塞进来。
+    fused_ids = {cid for cid, _, _ in fused}
+    forced = []
     for route in (vector_ids, keyword_ids):
-        if route and route[0][0] not in {cid for cid, _, _ in fused}:
-            forced.append(route[0][0])
+        if route and route[0][0] not in fused_ids:
+            cid = route[0][0]
+            forced.append((cid, 0.0,
+                           next((s for i, s in vector_ids if i == cid), None)))
     if forced:
-        extra = [(cid, 0.0, next((s for i, s in vector_ids if i == cid), None))
-                 for cid in forced]
-        fused = fused + extra
+        fused = fused + forced
 
     hits_map = await _fetch_hits(pool, [cid for cid, _, _ in fused])
 

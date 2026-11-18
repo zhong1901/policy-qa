@@ -346,7 +346,10 @@ async def ask_events(
         return
     except GenerationFailed as exc:
         logger.error("生成失败：%s", exc)
-        yield ("error", {"detail": "生成服务暂不可用", "status": 503})
+        # 把上游原因带出去：之前统一成「生成服务暂不可用」，
+        # 结果评测里 69 题全挂也看不出是限流(429)还是服务端挂了(5xx)。
+        yield ("error", {"detail": f"生成服务暂不可用（{str(exc)[:160]}）",
+                         "status": 503})
         return
 
     if answer.get("refused"):
