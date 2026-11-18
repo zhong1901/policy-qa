@@ -40,7 +40,10 @@ from app.services.generate import (
     regenerate_with_feedback,
     rewrite_query,
 )
-from app.services.retrieve import ClauseHit, _fetch_hits, hybrid_retrieve
+from app.services.retrieve import (
+    ClauseHit, _fetch_hits, cross_version_retrieve, hybrid_retrieve,
+    wants_cross_version,
+)
 from app.services.verify import verify
 
 logger = logging.getLogger(__name__)
@@ -280,9 +283,25 @@ async def ask_events(
     # ---- 检索 ----
     yield ("status", {"stage": "retrieving", "text": "正在检索政策条款"})
     meta: dict = {}
+    hits: list[ClauseHit] = []
+    cross_used = False
+
+    # 版本对比类问题走专门通道：普通检索带时间过滤，只会拿到现行版本，
+    # 「2020 版和 2024 版有什么不同」永远只答一半。这里按政策族跨版本召回。
+    if wants_cross_version(search_query):
+        try:
+            hits = await cross_version_retrieve(pool, search_query, as_of, settings)
+            cross_used = bool(hits)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("跨版本召回失败，回退普通检索：%s", exc)
+        if cross_used:
+            yield ("status", {"stage": "cross_version",
+                              "text": f"已取到 {len(hits)} 个历史版本，正在比对"})
+
     try:
-        hits = await hybrid_retrieve(pool, search_query, as_of, settings,
-                                     limit=settings.top_k_final, meta=meta)
+        if not cross_used:
+            hits = await hybrid_retrieve(pool, search_query, as_of, settings,
+                                         limit=settings.top_k_final, meta=meta)
     except EmbeddingNotConfigured as exc:
         yield ("error", {"detail": str(exc), "status": 503})
         return

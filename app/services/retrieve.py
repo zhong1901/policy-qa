@@ -102,12 +102,10 @@ def _extract_terms(question: str) -> list[str]:
             seen.add(term)
             result.append(term)
 
-    # 同义词扩展：把口语词补上公文写法，否则「社保」这类高频词等于没检索
-    for term in list(result):
-        for syn in _SYNONYMS.get(term, []):
-            if syn not in seen:
-                seen.add(syn)
-                result.append(syn)
+    # 同义词扩展曾经在这里：把「社保」补成「社会保险」、「落户」补成「申办常住户口」。
+    # 看着很对，但实测**整体是负收益**——这些词太泛（「常住户口」在几百条条款里都有），
+    # 加进去等于给关键词路灌噪声，事实层 Recall 从 93.3% 掉到 82.5%。
+    # 已摘除。如果以后要做，应该只对「跨版本/低置信」查询按需启用，而不是全局默认开。
 
     return result[:_TERM_LIMIT]
 
@@ -377,38 +375,38 @@ CLAUSE_BY_NO_SQL = """
 """
 
 
-# 政策族识别：从问题里认出它问的是哪部法规。
-# 不能依赖「模糊检索 top1」——实测问「居转户 2024 版和 2020 版」，top1 会跑到
-# 「城乡居民基本养老保险政策问答」上去，基准一错，后面全错。
-FAMILIES = [
-    ("居转户", ("居转户", "常住户口", "居住证转")),
+# 问题里的词 → policy_family 的取值。顺序有讲究：
+# 「居住证积分」必须排在「居住证申办」前面，否则会被更宽的规则先吃掉。
+_FAMILY_HINTS = [
+    ("居住证积分", ("居住证积分", "积分管理", "标准分值", "积分达标", "积分申请")),
+    ("居住证申办实施细则", ("申办实施细则", "居住证申办", "办理居住证", "居住登记")),
     ("引进人才", ("引进人才", "人才引进", "人才落户")),
-    ("居住证申办实施细则", ("申办实施细则", "居住证申办", "办理居住证")),
-    ("居住证积分", ("居住证积分", "积分管理", "标准分值", "积分达标")),
+    ("居转户", ("居转户", "常住户口", "居住证转")),
     ("海外人才居住证", ("海外人才居住证", "海外人才")),
-    ("应届生落户", ("非上海生源", "应届毕业生", "应届生落户")),
+    ("应届生落户", ("非上海生源", "应届毕业生落户", "应届生落户")),
 ]
 
-FAMILY_DOC_SQL = """
-    SELECT d.id, left(d.title, 60) AS title,
-           COALESCE(d.effective_from, d.publish_date) AS eff,
-           COALESCE(d.effective_to, DATE '9999-01-01') AS until
-      FROM documents d
-     WHERE d.title LIKE ANY($1::text[])
-     ORDER BY eff DESC NULLS LAST
-     LIMIT 8
-"""
-
-# 在一篇文档里选「最贴合问题」的那一条：按问题关键词的命中数排
-BEST_CLAUSE_SQL = """
+# 跨版本召回：同一个 policy_family、同一个条号，把所有版本一次取回。
+# 这替代了之前「按标题模糊匹配」的做法——那个做法遇到合订本会串族。
+CROSS_VERSION_SQL = """
     SELECT c.id, c.doc_key, c.clause_no, c.clause_path, c.content,
            d.title, d.source_url,
            COALESCE(c.effective_from, d.effective_from) AS eff_from,
-           (SELECT count(*) FROM unnest($2::text[]) AS p
-             WHERE c.content ILIKE p) AS hit
+           COALESCE(c.effective_to, d.effective_to) AS eff_to
       FROM clauses c JOIN documents d ON d.id = c.doc_id
-     WHERE d.id = $1 AND c.level <> 'preamble'
-     ORDER BY hit DESC, c.ordinal
+     WHERE c.policy_family = $1 AND c.clause_no = $2
+     ORDER BY eff_from DESC NULLS LAST, c.id
+     LIMIT 6
+"""
+
+# 在族内选「最贴合问题」的条号：按问题关键词命中数排
+FAMILY_BEST_NO_SQL = """
+    SELECT c.clause_no
+      FROM clauses c
+     WHERE c.policy_family = $1 AND c.level <> 'preamble'
+     ORDER BY (SELECT count(*) FROM unnest($2::text[]) AS p
+                WHERE c.content ILIKE p) DESC,
+              c.ordinal
      LIMIT 1
 """
 
@@ -418,10 +416,10 @@ def wants_cross_version(question: str) -> bool:
     return any(h in question for h in CROSS_VERSION_HINTS)
 
 
-def detect_family(question: str) -> tuple[str, tuple[str, ...]] | None:
-    for name, hints in FAMILIES:
+def detect_family(question: str) -> str | None:
+    for fam, hints in _FAMILY_HINTS:
         if any(h in question for h in hints):
-            return name, hints
+            return fam
     return None
 
 
@@ -432,65 +430,42 @@ async def cross_version_retrieve(
     settings: Settings,
     max_versions: int = 4,
 ) -> list[ClauseHit]:
-    """跨版本召回：拿到同一部法规多个版本的对应条款，供模型比对。
+    """跨版本召回：同一部法规、同一条号，把各个版本一起取回供模型比对。
 
-    步骤：认政策族 → 找该族全部版本 → 每个版本选最贴合问题的那一条。
-    没有这一步，「2024 版和 2020 版有什么不同」这类问题永远只能拿到一半素材
-    （旧版本被时间过滤排掉了）。
+    「2024 版和 2020 版有什么不同」这类问题，普通检索注定只拿到一半：
+    时间过滤会把已失效的旧版本排掉。
+    所以单独走这条路：先按 policy_family 定位法规，再取该族的同一个条号。
     """
     fam = detect_family(question)
     if fam is None:
         return []
-    name, hints = fam
-    # 用标题关键词去匹配，比如「常住户口办法」能同时命中 2020 版和 2024 版
-    patterns = [f"%{name}%"] + [f"%{h}%" for h in hints]
-    docs = await pool.fetch(FAMILY_DOC_SQL, patterns)
-    if not docs:
-        logger.info("跨版本：未找到「%s」族文档", name)
-        return []
 
     terms = _extract_terms(question)
     pats = [f"%{t}%" for t in terms]
-
-    # 第一步：每个版本各自选「最贴合问题」的那一条，看它们落在哪个条号上。
-    best_rows: list[tuple[dict, dict]] = []
-    for d in docs[:max_versions]:
-        row = await pool.fetchrow(BEST_CLAUSE_SQL, d["id"], pats)
-        if row is not None:
-            best_rows.append((d, row))
-    if not best_rows:
+    target_no = await pool.fetchval(FAMILY_BEST_NO_SQL, fam, pats)
+    if not target_no:
+        logger.info("跨版本：%s 族无匹配条款", fam)
         return []
 
-    # 第二步：取众数条号。必须对齐到「同一条」才谈得上比较——
-    # 实测不投票时，2024 版选到第 5 条、2020 版选到第 6 条，
-    # 模型拿到的是两条不同的条文，根本没法比。
-    from collections import Counter
-    counter = Counter(r["clause_no"] for _, r in best_rows)
-    target_no, votes = counter.most_common(1)[0]
-    logger.info("跨版本 %s：共识条号 %s（%d/%d 版本命中）",
-                name, target_no, votes, len(best_rows))
+    rows = await pool.fetch(CROSS_VERSION_SQL, fam, target_no)
+    if not rows:
+        return []
 
-    out: list[ClauseHit] = []
-    seen: set[int] = set()
-    for d, _ in best_rows:
-        row = await pool.fetchrow(CLAUSE_BY_NO_SQL, d["id"], target_no)
-        if row is None or row["id"] in seen:
-            continue
-        seen.add(row["id"])
-        out.append(ClauseHit(
-            clause_id=row["id"],
-            doc_key=row["doc_key"],
-            doc_title=row["title"],
-            clause_no=row["clause_no"],
-            clause_path=row["clause_path"],
-            content=row["content"],
-            effective_from=row["eff_from"],
-            url=row["source_url"],
-            score=float(votes),
+    out = [
+        ClauseHit(
+            clause_id=r["id"],
+            doc_key=r["doc_key"],
+            doc_title=r["title"],
+            clause_no=r["clause_no"],
+            clause_path=r["clause_path"],
+            content=r["content"],
+            effective_from=r["eff_from"],
+            url=r["source_url"],
+            score=1.0,
             vector_sim=None,
-        ))
-
-    out.sort(key=lambda h: (h.effective_from is None, h.effective_from), reverse=True)
-    logger.info("跨版本召回 %s：%d 个版本（%s）", name, len(out),
-                "、".join(f"{h.clause_no}@{h.effective_from}" for h in out))
+        )
+        for r in rows[:max_versions]
+    ]
+    logger.info("跨版本召回 %s %s：%d 个版本（%s）", fam, target_no, len(out),
+                "、".join(f"{h.effective_from}" for h in out))
     return out
