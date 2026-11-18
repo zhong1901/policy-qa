@@ -40,7 +40,9 @@ sys.path.insert(0, str(ROOT))
 load_dotenv(ROOT / ".env")
 
 BASE = "https://rsj.sh.gov.cn"
-OUT_DIR = Path(r"E:\deep seek\crawl-out")
+# 输出目录可配置：本地默认写到仓库下的 crawl-out，
+# CI 里由环境变量指定。写死 Windows 路径会导致 GitHub Actions 直接跑不起来。
+OUT_DIR = Path(os.environ.get("CRAWL_OUT_DIR") or (ROOT / "crawl-out"))
 
 # 抓取方标识：写明用途。注意这里**不冒充浏览器**——
 # 冒充 UA 既不诚实，也更容易在对方升级反爬时被一起封掉。

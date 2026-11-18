@@ -30,7 +30,7 @@ sys.path.insert(0, str(ROOT))
 
 REPORT = ROOT / "eval" / "eval_report.json"
 if not REPORT.exists():
-    REPORT = Path(r"E:\deep seek\_eval_out\eval_report.json")
+    REPORT = Path(os.environ.get("EVAL_OUT") or (ROOT / "eval")) / "eval_report.json"
 
 load_dotenv(ROOT / ".env")
 

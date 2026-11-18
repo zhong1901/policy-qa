@@ -36,7 +36,7 @@ from app.services.embed import embed_texts  # noqa: E402
 
 load_dotenv(ROOT / ".env")
 
-DEFAULT_INPUT = Path(r"E:\deep seek\crawl-out\new_docs.jsonl")
+DEFAULT_INPUT = Path(os.environ.get("CRAWL_OUT_DIR") or (ROOT / "crawl-out")) / "new_docs.jsonl"
 
 DOC_INSERT = """
 INSERT INTO documents
