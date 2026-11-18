@@ -136,9 +136,18 @@ async def _vector_candidates(
 
     $1::text::vector 的双重转换不能省：直接写 $1::vector 会让 Postgres 把参数类型
     推断成 vector，而 asyncpg 没有该类型的 codec。
+
+    为什么要显式调 hnsw.ef_search：
+    pgvector 的 HNSW 是近似检索，ef_search 默认 40，意味着「只探 40 个候选就收工」。
+    实测同一查询 LIMIT 30 完全找不到的条款，把 ef_search 调大后能排进前几。
+    这是召回率的一个隐藏上限，不加这一行就会莫名其妙漏条款。
     """
     vec_text = "[" + ",".join(f"{x:.8g}" for x in vec) + "]"
-    rows = await pool.fetch(_VECTOR_SQL, vec_text, as_of, k)
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # SET LOCAL 只在当前事务生效，不会污染连接池里的其它请求
+            await conn.execute("SET LOCAL hnsw.ef_search = 200")
+            rows = await conn.fetch(_VECTOR_SQL, vec_text, as_of, k)
     return [(r["id"], float(r["sim"])) for r in rows]
 
 

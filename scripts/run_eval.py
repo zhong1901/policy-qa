@@ -202,8 +202,10 @@ async def main() -> None:
     try:
         rows = await pool.fetch(
             "SELECT qid, stratum, question, expected, gold_clause_ids "
-            "FROM qa_eval "
-            + ("WHERE gold_clause_ids IS NOT NULL AND array_length(gold_clause_ids,1) > 0 " if args.only_with_gold else "")
+            # 撤回的题不参与评测（例如 gold 出自已失效文件的题，
+            # 系统过滤掉它是正确行为，不该算它错）
+            "FROM qa_eval WHERE status IS DISTINCT FROM '已撤回' "
+            + ("AND gold_clause_ids IS NOT NULL AND array_length(gold_clause_ids,1) > 0 " if args.only_with_gold else "")
             + "ORDER BY qid"
         )
         if args.stratum:
