@@ -31,6 +31,9 @@ async def main():
               JOIN clauses c ON c.id = g.gid
               JOIN documents d ON d.id = c.doc_id
              WHERE COALESCE(c.effective_to, d.effective_to) < $1::date
+               -- 「版本对比」类题目**故意**引用已失效的旧版本（答案就是新旧差异），
+               -- 它们引用过期文件是正确的，不能当标注错误处理。
+               AND q.status IS DISTINCT FROM '版本对比'
              ORDER BY q.qid""", date.today())
 
         print(f"体检：{len(rows)} 条 gold 取自已失效文件")
