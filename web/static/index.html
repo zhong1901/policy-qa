@@ -109,6 +109,13 @@
   .conclusion .cite-inline:hover{background:var(--accent); color:#fff}
   .note-line{margin:10px 0 0;font-size:13px;color:var(--ink3);line-height:1.7}
 
+  /* ── 对话轮次 ── */
+  .turn{padding-top:26px;margin-top:26px;border-top:1px solid var(--line)}
+  .turn:first-child{border-top:0;margin-top:0;padding-top:0}
+  .tq{font-size:16px;font-weight:600;color:var(--ink);margin-bottom:14px;
+      padding-left:14px;border-left:3px solid var(--accent);line-height:1.6}
+  .tq::before{content:"问 ";color:var(--accent);font-weight:700}
+
   section.block{margin-top:26px; padding-top:22px; border-top:1px solid var(--line)}
   section.block:first-of-type{margin-top:22px}
   .block h3{
@@ -322,7 +329,22 @@ function markCitations(text){
     (_, n) => `<button class="cite-inline" data-ref="C${n}" title="查看出处">${n}</button>`);
 }
 
+/* ── 对话轮次 ──
+   之前每问一句就把上一句的答案覆盖掉，看起来像单轮。
+   现在每轮追加一块，旧答案留在上面，多轮才看得出来。 */
+let CURRENT = out;
+
+function startTurn(q){
+  const div = document.createElement("div");
+  div.className = "turn";
+  div.innerHTML = `<div class="tq">${esc(q)}</div><div class="ta"></div>`;
+  out.appendChild(div);
+  CURRENT = div.querySelector(".ta");
+  div.scrollIntoView({ block: "start", behavior: "smooth" });
+}
+
 function renderEmpty(){
+  CURRENT = out;
   out.innerHTML = `<div class="empty">
     <div>
       <div class="k">能问什么</div>
@@ -346,7 +368,7 @@ function renderEmpty(){
 
 /* ── 流式过程区 ── */
 function renderLive(stageText){
-  out.innerHTML = `<div id="live">
+  CURRENT.innerHTML = `<div id="live">
     <div class="stage"><span class="spin"></span><span id="stage-text">${esc(stageText)}</span></div>
     <div id="retrieval"></div>
   </div>`;
@@ -389,14 +411,14 @@ function handleSSE(chunk){
 }
 
 function skeleton(){
-  out.innerHTML = `<div class="skeleton">
+  CURRENT.innerHTML = `<div class="skeleton">
     <div class="sk-line w40"></div><div class="sk-line w80"></div>
     <div class="sk-line w80"></div><div class="sk-line w60"></div>
   </div>`;
 }
 
 function renderRefused(d){
-  out.innerHTML = `
+  CURRENT.innerHTML = `
     <div class="card refused">
       <div class="eyebrow">未找到依据</div>
       <p class="conclusion">${esc(d.conclusion)}</p>
@@ -483,11 +505,11 @@ function renderAnswer(d){
     <span class="dot"></span><span>判定时点 ${esc(d.as_of)}</span>
   </div>`);
 
-  out.innerHTML = parts.join("");
+  CURRENT.innerHTML = parts.join("");
 }
 
 function renderError(msg){
-  out.innerHTML = `<div class="card refused">
+  CURRENT.innerHTML = `<div class="card refused">
     <div class="eyebrow">出错了</div>
     <p class="conclusion" style="font-size:17px">${esc(msg)}</p>
     <p style="margin:12px 0 0;color:var(--ink2);font-size:14px">
@@ -503,6 +525,8 @@ async function ask(){
   const btn = $("#go");
   btn.disabled = true;
   btn.textContent = "检索中";
+  startTurn(q);                 // 追加一轮，旧答案留在上面
+  ta.value = "";
   renderLive("正在检索政策条款");
 
   try{
