@@ -128,6 +128,20 @@ jobs:
           mkdir -p "$EVAL_OUT"
           python scripts/run_eval.py --temperature 0 --sleep 1.5 | tee /tmp/eval.log
           python scripts/run_regression.py | tee /tmp/regress.log
+      # ── 备份核心数据：21 秒、几十 KB，因为不含向量 ──
+      - name: 备份核心数据
+        if: always()
+        run: |
+          python scripts/backup_db.py --small-only --out "${{ github.workspace }}/backups"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: db-backup-${{ github.run_number }}
+          path: ${{ github.workspace }}/backups/*.zip
+          retention-days: 90
+          if-no-files-found: warn
+
       - name: 汇总
         if: always()
         run: |
