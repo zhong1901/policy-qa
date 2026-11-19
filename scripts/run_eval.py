@@ -89,9 +89,14 @@ async def run_one(row, pool, settings, repeat: int = 1) -> dict:
     # 从 query_log 拿本次召回。必须按 question 精确匹配 + 取最新一条：
     # 如果只按 id DESC 取全表最新，一旦某题中途 503 没写日志，就会读到上一题的行，
     # 导致 recall 计算串题。
+    #
+    # 还要加时间下界：本题生成失败时根本不会写日志，此时会读到**上一次运行**的旧记录，
+    # 拿旧召回算 recall。2026-11-19 那次 CI 就是这样显示了一个假的 79.6%。
     log = await pool.fetchrow(
-        "SELECT retrieved_ids FROM query_log WHERE question = $1 ORDER BY id DESC LIMIT 1",
-        row["question"],
+        """SELECT retrieved_ids FROM query_log
+            WHERE question = $1 AND ($2::timestamp IS NULL OR created_at >= $2)
+            ORDER BY id DESC LIMIT 1""",
+        row["question"], _RUN_STARTED_AT,
     )
     retrieved = set(log["retrieved_ids"] or []) if log else set()
 
@@ -175,6 +180,9 @@ def fmt_pct(x):
     return f"{x*100:.1f}%" if x is not None else "—"
 
 
+_RUN_STARTED_AT = None
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=None)
@@ -196,6 +204,9 @@ async def main() -> None:
         sys.exit("没有 DATABASE_URL")
 
     # 覆盖温度：只影响本次评测进程，不动生产默认值
+    global _RUN_STARTED_AT
+    from datetime import datetime as _dt
+    _RUN_STARTED_AT = _dt.now()
     settings = get_settings().model_copy(update={"llm_temperature": args.temperature})
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3, **connect_kwargs(dsn))
 
@@ -262,6 +273,16 @@ async def main() -> None:
         print(f"  {k:<6} n={v['n']:<3} recall={fmt_pct(v['recall'])} "
               f"作答={v['answered']} 正确拒={v['correct_refusal']}")
     print(f"\n报告 -> {OUT_DIR / 'eval_report.json'}")
+
+    # 守卫：异常率过高说明这次评测根本没测出东西，不能当成功。
+    # 2026-11-19 那次 CI，69 题里全挂，但因为脚本返回 0，任务显示绿色，
+    # 实际跑出来的指标全是垃圾。评测失败必须让 CI 红。
+    errors = s["errors"]
+    total = s["total"] or 1
+    if errors / total > 0.2:
+        print(f"\n✗ 异常率 {errors}/{total} 超过 20%，本次评测结果不可信。")
+        print("  常见原因：LLM_API_KEY / EMBEDDING_API_KEY 没配或失效、模型接口限流。")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
