@@ -7,11 +7,26 @@
 """
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """全局配置。字段名和 .env 里的 key 一一对应。"""
+
+    # 空字符串等于没配。CI 里如果写了 `LLM_BASE_URL: ${{ secrets.X }}`
+    # 而 X 不存在，GitHub 会传入空串——空串会覆盖下面的默认值，
+    # 最终请求地址变成 "/chat/completions"，报「URL 缺少协议头」这种莫名其妙的错。
+    #
+    # 注意必须返回该字段自己的默认值，不能返回 None：
+    # mode="before" 返回 None 会被当成「显式传入 None」，直接校验失败。
+    @field_validator("llm_base_url", "embedding_base_url", "llm_model",
+                     "embedding_model", mode="before")
+    @classmethod
+    def _empty_uses_default(cls, v, info):
+        if v is None or not str(v).strip():
+            return cls.model_fields[info.field_name].default
+        return v
 
     # 数据库连接串（asyncpg 用）
     database_url: str = "postgresql://policy:policy@localhost:5432/policy"
@@ -19,7 +34,7 @@ class Settings(BaseSettings):
     # ---- 生成侧大模型（可选：不配也能跑检索）----
     llm_base_url: str = "https://api.deepseek.com/v1"
     llm_api_key: str | None = None
-    llm_model: str = "deepseek-v4-pro"
+    llm_model: str = "deepseek-flash"
     # DeepSeek V4 系列是推理模型：reasoning_tokens 会先吃掉 max_tokens，
     # 给得太小会拿到空 content（实测 60 个 token 全被 reasoning 用光）。
     # 结构化答案 + 思考过程，2000 是安全下限。
