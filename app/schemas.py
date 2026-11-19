@@ -96,6 +96,22 @@ class EligibilityCitation(BaseModel):
     url: str | None = None
 
 
+class EligibilityMaterial(BaseModel):
+    """一项申办材料。text 是条款原文，不改写。"""
+
+    label: str = ""
+    text: str
+
+
+class EligibilityMaterials(BaseModel):
+    """一条路径的完整材料清单，全部来自同一条枚举型条款。"""
+
+    clause_id: int
+    clause_no: str | None = None
+    doc_title: str
+    items: list[EligibilityMaterial] = Field(default_factory=list)
+
+
 class EligibilityVerdict(BaseModel):
     key: str
     name: str
@@ -104,6 +120,8 @@ class EligibilityVerdict(BaseModel):
     citations: list[EligibilityCitation] = Field(default_factory=list)
     note: str = ""
     extra: dict = Field(default_factory=dict)
+    # 申办材料清单。只对配置了材料条款的路径有值，其余为 None。
+    materials: EligibilityMaterials | None = None
 
 
 class EligibilitySummary(BaseModel):

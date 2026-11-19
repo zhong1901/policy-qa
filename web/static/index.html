@@ -304,7 +304,7 @@
 const $ = (s) => document.querySelector(s);
 
 /* 匿名访问上报：只记访客哈希和来源域名，不记 IP / UA 明文 */
-fetch(/api/visit, { method: POST }).catch(() => {});
+fetch("/api/visit", { method: "POST" }).catch(() => {});
 
 const out = $("#out");
 const ta = $("#q");

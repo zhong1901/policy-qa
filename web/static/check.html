@@ -76,6 +76,22 @@
                   cursor:pointer;white-space:nowrap}
   .savebar button:disabled{opacity:.6;cursor:default}
 
+
+  /* ── 申办材料清单 ── */
+  .mats{margin-top:14px;padding-top:12px;border-top:1px dashed var(--line)}
+  .mats .h{font-size:11.5px;letter-spacing:.08em;color:var(--ink3);font-weight:600;
+           margin-bottom:8px;display:flex;justify-content:space-between;align-items:center}
+  .mats ul{list-style:none;margin:0;padding:0}
+  .mats li{display:flex;gap:9px;padding:8px 0;border-bottom:1px solid var(--line);
+           font-size:13.5px;color:var(--ink2);line-height:1.65}
+  .mats li:last-child{border-bottom:0}
+  .mats input{width:16px;height:16px;margin-top:2px;accent-color:var(--accent);flex-shrink:0;cursor:pointer}
+  .mats li.done span{text-decoration:line-through;color:var(--ink3)}
+  .mats .src{font-size:11.5px;color:var(--ink3);margin-top:8px}
+  .mats .print{font-size:12px;color:var(--accent);cursor:pointer;background:none;
+               border:1px solid var(--accent-line);border-radius:6px;padding:3px 10px;font-family:inherit}
+  .mats .print:hover{background:var(--accent-soft)}
+
   .vcard{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
          padding:22px 26px;margin-bottom:14px}
   .vcard.ok{border-left:3px solid var(--ok)}
@@ -240,7 +256,7 @@
 const $ = s => document.querySelector(s);
 
 /* 匿名访问上报：只记访客哈希和来源域名，不记 IP / UA 明文 */
-fetch(/api/visit, { method: POST }).catch(() => {});
+fetch("/api/visit", { method: "POST" }).catch(() => {});
 
 const out = $("#out");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -258,6 +274,34 @@ const SID = getSid();
 
 const ICON = { "满足": ["m","✓"], "不满足": ["x","✗"], "无法判断": ["u","?"], "计分": ["s","·"] };
 const BADGE = { "符合": "ok", "不符合": "no", "待确认": "warn" };
+
+function materialsBlock(v){
+  const m = v.materials;
+  // 只在「符合 / 待确认」时给材料清单——不符合的路径没必要准备材料
+  if (!m || !m.items || !m.items.length) return "";
+  if (v.result !== "符合" && v.result !== "待确认") return "";
+
+  const storeKey = "pq_mat_" + v.key;
+  let done = [];
+  try { done = JSON.parse(localStorage.getItem(storeKey) || "[]"); } catch(e){ done = []; }
+
+  const items = m.items.map((it, i) => {
+    const on = done.includes(i);
+    return `<li class="${on ? "done" : ""}">
+      <input type="checkbox" data-mat="${esc(v.key)}" data-idx="${i}" ${on ? "checked" : ""}>
+      <span>${esc(it.text)}</span>
+    </li>`;
+  }).join("");
+
+  return `<div class="mats">
+    <div class="h">
+      <span>申办材料 · ${m.items.length} 项</span>
+      <button class="print" data-print="${esc(v.key)}">打印清单</button>
+    </div>
+    <ul>${items}</ul>
+    <div class="src">依据：${esc(m.clause_no || "")}《${esc(m.doc_title)}》</div>
+  </div>`;
+}
 
 function verdictCard(v){
   const cls = BADGE[v.result] || "no";
@@ -283,6 +327,7 @@ function verdictCard(v){
       ${score}
     </div>
     <ul class="chk">${checks}</ul>
+    ${materialsBlock(v)}
     ${deps}${note}
   </div>`;
 }
@@ -371,7 +416,53 @@ out.addEventListener("click", e => {
   if (b) openClause(b.dataset.cid);
 });
 
-/* 保存画像：整条覆盖，不合并 */
+/* 勾选材料：状态存 localStorage，刷新页面不丢 */
+out.addEventListener("change", e => {
+  const cb = e.target.closest("[data-mat]");
+  if (!cb) return;
+  const key = "pq_mat_" + cb.dataset.mat;
+  let done = [];
+  try { done = JSON.parse(localStorage.getItem(key) || "[]"); } catch(err){ done = []; }
+  const idx = parseInt(cb.dataset.idx, 10);
+  if (cb.checked) { if (!done.includes(idx)) done.push(idx); }
+  else { done = done.filter(x => x !== idx); }
+  localStorage.setItem(key, JSON.stringify(done));
+  const li = cb.closest("li");
+  if (li) li.classList.toggle("done", cb.checked);
+});
+
+/* 打印清单：新窗口只放这一份，避免把整页打出来 */
+out.addEventListener("click", e => {
+  const btn = e.target.closest("[data-print]");
+  if (!btn) return;
+  const key = btn.dataset.print;
+  const card = btn.closest(".mats");
+  if (!card) return;
+  const items = Array.from(card.querySelectorAll("li"))
+    .map(li => {
+      const box = li.querySelector("input");
+      return `<li>${box && box.checked ? "☑" : "☐"} ${esc(li.querySelector("span").textContent)}</li>`;
+    }).join("");
+  const src = card.querySelector(".src") ? esc(card.querySelector(".src").textContent) : "";
+  const w = window.open("", "_blank");
+  if (!w) { alert("浏览器拦截了弹窗，请允许后重试"); return; }
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+    <title>申办材料清单</title>
+    <style>body{font-family:system-ui,"PingFang SC","Microsoft YaHei",sans-serif;
+      max-width:640px;margin:32px auto;padding:0 20px;line-height:1.8;color:#1a1a18}
+      h1{font-size:19px;margin:0 0 6px}p.sub{color:#8a857e;font-size:12px;margin:0 0 20px}
+      ul{list-style:none;padding:0}li{padding:8px 0;border-bottom:1px solid #e6e1d8}
+      .src{margin-top:18px;font-size:12px;color:#8a857e}</style></head><body>
+    <h1>上海落户申办材料清单</h1>
+    <p class="sub">项目：${esc(key)}　生成于 ${new Date().toLocaleDateString("zh-CN")}</p>
+    <ul>${items}</ul>
+    <div class="src">${src}</div>
+    <p class="src">本清单由个人作品生成，仅供参考，请以官方口径为准。</p>
+    </body></html>`);
+  w.document.close();
+  w.focus();
+  setTimeout(() => w.print(), 300);
+});
 out.addEventListener("click", async e => {
   const btn = e.target.closest("#saveprof");
   if (!btn) return;

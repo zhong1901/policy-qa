@@ -14,12 +14,15 @@ from app.db import get_pool
 from app.schemas import (
     EligibilityCitation,
     EligibilityCheck,
+    EligibilityMaterial,
+    EligibilityMaterials,
     EligibilityRequest,
     EligibilityResponse,
     EligibilitySummary,
     EligibilityVerdict,
 )
 from app.services.eligibility import Profile, evaluate, summarize
+from app.services.materials import get_materials
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +71,18 @@ async def eligibility(
                 "url": r["source_url"],
             }
 
+    # 材料清单：只对配置了材料条款的路径取，取不到就是 None（前端会显示「待补充」）
+    materials_map = {}
+    for v in verdicts:
+        m = await get_materials(pool, v.key)
+        if m:
+            materials_map[v.key] = EligibilityMaterials(
+                clause_id=m["clause_id"],
+                clause_no=m["clause_no"],
+                doc_title=m["doc_title"],
+                items=[EligibilityMaterial(**it) for it in m["items"]],
+            )
+
     out: list[EligibilityVerdict] = []
     for v in verdicts:
         out.append(EligibilityVerdict(
@@ -80,6 +95,7 @@ async def eligibility(
                        for cid in v.clause_ids if cid in clause_map],
             note=v.note,
             extra=v.extra,
+            materials=materials_map.get(v.key),
         ))
 
     logger.info("资格自测完成：%s", {v.key: v.result for v in verdicts})
