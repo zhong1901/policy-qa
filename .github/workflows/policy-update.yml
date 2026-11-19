@@ -1,0 +1,110 @@
+name: 政策增量更新
+
+# 每周一 03:00 UTC（北京时间 11:00）自动跑一次
+# 也可以在 Actions 页面手动点 Run workflow
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      pages:
+        description: "每个栏目翻几页列表"
+        default: "2"
+        required: false
+
+concurrency:
+  group: policy-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      EMBEDDING_API_KEY: ${{ secrets.EMBEDDING_API_KEY }}
+      LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+      EMBEDDING_BASE_URL: ${{ secrets.EMBEDDING_BASE_URL }}
+      PYTHONIOENCODING: utf-8
+      CRAWL_OUT_DIR: ${{ github.workspace }}/crawl-out
+      EVAL_OUT: ${{ github.workspace }}/eval
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install lxml
+
+      - name: 抓取前置检查
+        run: |
+          echo "https://rsj.sh.gov.cn/tjypx_17737/20250310/t0035_1431083.html" > /tmp/urls.txt
+          python scripts/crawl_preflight.py --urls /tmp/urls.txt
+
+      - name: 增量抓取
+        id: crawl
+        run: |
+          PAGES="${{ github.event.inputs.pages || '2' }}"
+          python scripts/crawl_incremental.py --pages "$PAGES" | tee /tmp/crawl.log
+          NEW=$(python -c "
+          import json, pathlib, os
+          p = pathlib.Path(os.environ['CRAWL_OUT_DIR']) / 'crawl_result.json'
+          print(len(json.loads(p.read_text(encoding='utf-8'))) if p.exists() else 0)
+          ")
+          echo "new_docs=$NEW" >> "$GITHUB_OUTPUT"
+          echo "本次抓到 $NEW 篇新文档"
+
+      - name: 变更检测
+        if: steps.crawl.outputs.new_docs != '0'
+        run: |
+          python scripts/update_pipeline.py \
+            --incoming "$CRAWL_OUT_DIR/crawl_result.json" \
+            --incremental \
+            --source rsj.sh.gov.cn | tee /tmp/detect.log
+
+      - name: 新文档入库
+        if: steps.crawl.outputs.new_docs != '0'
+        run: |
+          if [ -f "$CRAWL_OUT_DIR/new_docs.jsonl" ]; then
+            python scripts/ingest_new_docs.py | tee /tmp/ingest.log
+          else
+            echo "没有 new_docs.jsonl，跳过"
+          fi
+
+      - name: 跑评测并对比基线
+        if: steps.crawl.outputs.new_docs != '0'
+        run: |
+          mkdir -p "$EVAL_OUT"
+          python scripts/run_eval.py --temperature 0 --sleep 1.5 | tee /tmp/eval.log
+          python scripts/run_regression.py | tee /tmp/regress.log
+
+      - name: 汇总
+        if: always()
+        run: |
+          {
+            echo "## 政策增量更新结果"
+            echo ""
+            echo "| 项目 | 结果 |"
+            echo "|---|---|"
+            echo "| 新文档 | ${{ steps.crawl.outputs.new_docs }} 篇 |"
+            echo "| 触发时间 | $(date -u '+%Y-%m-%d %H:%M UTC') |"
+            echo ""
+            if [ -f /tmp/crawl.log ]; then
+              echo "### 抓取"; echo '```'; tail -n 25 /tmp/crawl.log; echo '```'
+            fi
+            if [ -f /tmp/ingest.log ]; then
+              echo "### 入库"; echo '```'; tail -n 15 /tmp/ingest.log; echo '```'
+            fi
+            if [ -f /tmp/regress.log ]; then
+              echo "### 回归对比"; echo '```'; tail -n 30 /tmp/regress.log; echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
