@@ -33,6 +33,7 @@ def _sse(event: str, data: dict) -> str:
 @router.post("/ask/stream")
 async def ask_stream(
     req: AskRequest,
+    request: Request,
     pool: asyncpg.Pool = Depends(get_pool),
     settings: Settings = Depends(get_settings),
 ) -> StreamingResponse:
@@ -45,7 +46,8 @@ async def ask_stream(
     async def gen():
         try:
             async for typ, data in ask_events(pool, settings, question, as_of,
-                              req.session_id or "", _vh(request)):
+                              req.session_id or "",
+                              _vh(request) if request is not None else ""):
                 yield _sse(typ, data)
         except Exception as exc:  # noqa: BLE001
             # 流已经开始，没法再改 HTTP 状态码，只能作为 error 事件推给前端
@@ -71,14 +73,19 @@ async def ask(
     pool: asyncpg.Pool = Depends(get_pool),
     settings: Settings = Depends(get_settings),
 ) -> AskResponse:
-    """一次性问答：返回带引用的结构化答案，无法回答时明确拒答。"""
+    """一次性问答：返回带引用的结构化答案，无法回答时明确拒答。
+
+    注意：request 是必填的（FastAPI 靠类型注入）。评测脚本直接调这个函数时
+    没有真实 HTTP 请求，需要自己造一个假 Request 传进来，见 scripts/run_eval.py。
+    """
     question = req.question.strip()
     if not question:
         raise HTTPException(status_code=422, detail="问题不能为空白")
     as_of = req.as_of or date.today()
 
     async for typ, data in ask_events(pool, settings, question, as_of,
-                              req.session_id or "", _vh(request)):
+                              req.session_id or "",
+                              _vh(request) if request is not None else ""):
         if typ == "answer":
             return AskResponse(**data)
         if typ == "error":

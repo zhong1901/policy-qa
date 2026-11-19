@@ -51,6 +51,20 @@ def connect_kwargs(dsn: str) -> dict:
     return kw
 
 
+def _fake_request():
+    """造一个最小的 Starlette Request。
+
+    评测是直接调 ask() 的，没有真实 HTTP 请求，而 ask() 需要 request 来算访客哈希。
+    2026-11-19 那次 CI 就是因为少了这个参数，69 道题全部 TypeError。
+    """
+    from starlette.requests import Request
+    return Request({
+        "type": "http", "method": "POST", "path": "/api/ask",
+        "headers": [], "query_string": b"", "scheme": "http",
+        "server": ("eval", 80), "client": ("127.0.0.1", 0),
+    })
+
+
 async def run_one(row, pool, settings, repeat: int = 1) -> dict:
     qid = row["qid"]
     gold = set(row["gold_clause_ids"] or [])
@@ -67,6 +81,7 @@ async def run_one(row, pool, settings, repeat: int = 1) -> dict:
         try:
             resp = await ask(
                 AskRequest(question=row["question"], as_of=date.today()),
+                _fake_request(),
                 pool=pool,
                 settings=settings,
             )
