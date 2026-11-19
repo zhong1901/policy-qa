@@ -109,7 +109,8 @@ async def run_one(row, pool, settings, repeat: int = 1) -> dict:
     # 拿旧召回算 recall。2026-11-19 那次 CI 就是这样显示了一个假的 79.6%。
     log = await pool.fetchrow(
         """SELECT retrieved_ids FROM query_log
-            WHERE question = $1 AND ($2::timestamp IS NULL OR created_at >= $2)
+            WHERE question = $1
+              AND ($2::timestamptz IS NULL OR created_at >= $2::timestamptz)
             ORDER BY id DESC LIMIT 1""",
         row["question"], _RUN_STARTED_AT,
     )
@@ -220,8 +221,8 @@ async def main() -> None:
 
     # 覆盖温度：只影响本次评测进程，不动生产默认值
     global _RUN_STARTED_AT
-    from datetime import datetime as _dt
-    _RUN_STARTED_AT = _dt.now()
+    from datetime import datetime as _dt, timezone as _tz
+    _RUN_STARTED_AT = _dt.now(_tz.utc)
     settings = get_settings().model_copy(update={"llm_temperature": args.temperature})
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3, **connect_kwargs(dsn))
 
