@@ -1,5 +1,4 @@
 name: 政策增量更新
-
 # 每周一 03:00 UTC（北京时间 11:00）自动跑一次
 # 也可以在 Actions 页面手动点 Run workflow
 on:
@@ -11,16 +10,13 @@ on:
         description: "每个栏目翻几页列表"
         default: "2"
         required: false
-
 concurrency:
   group: policy-update
   cancel-in-progress: false
-
 jobs:
   update:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-
     env:
       # 这三个必须配在仓库 Secrets 里
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -33,35 +29,29 @@ jobs:
       # 输出目录统一放在仓库下，方便后续步骤引用
       CRAWL_OUT_DIR: ${{ github.workspace }}/crawl-out
       EVAL_OUT: ${{ github.workspace }}/eval
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
-
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           # lxml 只在爬虫里用，不进服务端 requirements
           pip install lxml
-
       - name: 检查密钥
         run: |
           # 提前验证三个密钥。不查的话，密钥错要等 13 分钟评测跑完才发现，
           # 而且评测全挂时容易误判成检索坏了。
           python - <<'PY'
           import os, sys, httpx
-
           missing = [k for k in ("DATABASE_URL", "LLM_API_KEY", "EMBEDDING_API_KEY")
                      if not os.getenv(k)]
           if missing:
               print("✗ 缺少 Secrets:", ", ".join(missing)); sys.exit(1)
           print("✓ 三个 Secrets 都已配置")
-
           emb_base = os.getenv("EMBEDDING_BASE_URL") or "https://api.siliconflow.cn/v1"
           emb_key = os.environ["EMBEDDING_API_KEY"]
           try:
@@ -74,7 +64,6 @@ jobs:
                   print(f"✗ embedding 接口返回 {r.status_code}: {r.text[:200]}"); sys.exit(1)
           except Exception as e:
               print(f"✗ embedding 接口不可达: {e}"); sys.exit(1)
-
           llm_base = os.getenv("LLM_BASE_URL") or "https://api.deepseek.com/v1"
           llm_key = os.environ["LLM_API_KEY"]
           try:
@@ -90,13 +79,11 @@ jobs:
           except Exception as e:
               print(f"✗ 模型接口不可达: {e}"); sys.exit(1)
           PY
-
       # ── 第一道守卫：robots 检查 ──
       - name: 抓取前置检查
         run: |
           echo "https://rsj.sh.gov.cn/tjypx_17737/20250310/t0035_1431083.html" > /tmp/urls.txt
           python scripts/crawl_preflight.py --urls /tmp/urls.txt
-
       # ── 抓取：只抓列表页发现的新文档 ──
       - name: 增量抓取
         id: crawl
@@ -113,7 +100,6 @@ jobs:
           )
           echo "new_docs=$NEW" >> "$GITHUB_OUTPUT"
           echo "本次抓到 $NEW 篇新文档"
-
       # ── 第二道守卫 + 变更记录 ──
       - name: 变更检测
         if: steps.crawl.outputs.new_docs != '0'
@@ -123,7 +109,6 @@ jobs:
             --incoming "$CRAWL_OUT_DIR/crawl_result.json" \
             --incremental \
             --source rsj.sh.gov.cn | tee /tmp/detect.log
-
       # ── 切分 + 向量化 + 入库 ──
       - name: 新文档入库
         if: steps.crawl.outputs.new_docs != '0'
@@ -133,7 +118,6 @@ jobs:
           else
             echo "没有 new_docs.jsonl，跳过"
           fi
-
       # ── 只有真的入库了新内容，才跑回归（省 API 额度）──
       - name: 跑评测并对比基线
         if: steps.crawl.outputs.new_docs != '0'
@@ -144,7 +128,6 @@ jobs:
           mkdir -p "$EVAL_OUT"
           python scripts/run_eval.py --temperature 0 --sleep 1.5 | tee /tmp/eval.log
           python scripts/run_regression.py | tee /tmp/regress.log
-
       - name: 汇总
         if: always()
         run: |
