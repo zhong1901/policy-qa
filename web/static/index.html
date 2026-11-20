@@ -242,52 +242,101 @@
     .conclusion{font-size:18.5px}
     .empty{grid-template-columns:1fr}
   }
+  /* ══════ 对话框布局 ══════
+     不是「一个不断变长的网页」，是固定高度的对话窗口：
+     消息区内部滚动，输入框钉在底部，新消息滚的是容器而不是整个页面。 */
+  html, body{height:100%}
+  body{display:flex;flex-direction:column;overflow:hidden}
+
+  .topbar{flex:0 0 auto;max-width:none;margin:0;padding:13px 24px;
+          border-bottom:1px solid var(--line);background:var(--paper);
+          display:flex;align-items:center;justify-content:space-between}
+
+  .chat{flex:1 1 auto;overflow-y:auto;overscroll-behavior:contain;scroll-behavior:smooth}
+  .chat-inner{max-width:820px;margin:0 auto;padding:20px 24px 12px}
+
+  .hero{padding:24px 0 10px}
+
+  /* 用户消息：右侧气泡 */
+  .msg-user{display:flex;justify-content:flex-end;margin:26px 0 12px}
+  .msg-user .bubble{max-width:80%;background:var(--accent);color:#fff;
+        padding:11px 15px;border-radius:14px 14px 4px 14px;
+        font-size:14.5px;line-height:1.65;white-space:pre-wrap;word-break:break-word}
+
+  /* 助手回复：整宽卡片，去掉原来的分隔线（气泡已经隔开） */
+  .turn{padding-top:0;margin-top:0;border-top:0}
+
+  /* 输入区钉在底部 */
+  .composer{flex:0 0 auto;border-top:1px solid var(--line);background:var(--paper);
+            padding:12px 24px}
+  .composer-inner{max-width:820px;margin:0 auto;display:flex;gap:10px;align-items:flex-end}
+  .composer textarea{flex:1;resize:none;border:1px solid var(--line);border-radius:12px;
+        padding:11px 14px;font-size:14.5px;font-family:inherit;line-height:1.55;
+        background:#fff;outline:0;max-height:160px;overflow-y:auto}
+  .composer textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+  .composer .send{flex:0 0 auto;width:42px;height:42px;border-radius:11px;background:var(--accent);
+        color:#fff;border:0;font-size:17px;font-weight:700;cursor:pointer;display:grid;place-items:center}
+  .composer .send:disabled{opacity:.5;cursor:default}
+  .composer-hint{max-width:820px;margin:8px auto 0;font-size:11.5px;color:var(--ink3);
+        display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;line-height:1.6}
+
+  .composer .send.loading{font-size:0}
+  .composer .send.loading::after{content:"";width:16px;height:16px;
+        border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;
+        animation:spin .7s linear infinite}
+
+  @media (max-width:640px){
+    .topbar{padding:11px 14px}
+    .chat-inner{padding:14px 14px 8px}
+    .composer{padding:10px 14px}
+    .msg-user .bubble{max-width:88%}
+  }
 </style>
 </head>
 <body>
-<div class="wrap">
 
-  <div class="topbar">
-    <div class="brand">
-      <div class="brand-mark">沪</div>
-      <div class="brand-text">上海人才与就业政策 · 可溯源问答</div>
-    </div>
-    <div style="display:flex;gap:8px">
-      <button class="nav-link" id="newchat" style="background:transparent;cursor:pointer;font-family:inherit">新对话</button>
-      <a class="nav-link" href="/check.html">资格自测 →</a>
-    </div>
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-mark">沪</div>
+    <div class="brand-text">上海人才与就业政策 · 可溯源问答</div>
   </div>
-
-  <h1>问一句，给你能查证的答案</h1>
-  <p class="lede">
-    覆盖 <b>1301 份</b>市级政策文件、<b>7690 条</b>条款。每个结论都标注了出处，
-    点开就能看到原文；查不到就明说查不到，<b>不编</b>。
-  </p>
-
-  <div class="ask">
-    <textarea id="q" rows="2" placeholder="例如：应届毕业生落户需要什么条件？" autocomplete="off"></textarea>
-    <div class="ask-row">
-      <span class="hint"><kbd>Enter</kbd> 提问 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
-      <button class="send" id="go">提问</button>
-    </div>
+  <div style="display:flex;gap:8px">
+    <button class="nav-link" id="newchat" style="background:transparent;cursor:pointer;font-family:inherit">新对话</button>
+    <a class="nav-link" href="/check.html">资格自测 →</a>
   </div>
+</header>
 
-  <div class="examples" id="examples">
-    <button class="chip">应届毕业生落户需要什么条件？</button>
-    <button class="chip">租房补贴需要什么材料？</button>
-    <button class="chip">居住证积分标准分值是多少？</button>
-    <button class="chip">居转户要满几年？</button>
+<main class="chat" id="chat">
+  <div class="chat-inner">
+
+    <section class="hero" id="hero">
+      <h1>问一句，给你能查证的答案</h1>
+      <p class="lede">
+        覆盖 <b>1340 份</b>市级政策文件、<b>7729 条</b>条款。每个结论都标注了出处，
+        点开就能看到原文；查不到就明说查不到，<b>不编</b>。
+      </p>
+      <div class="examples" id="examples">
+        <button class="chip">应届毕业生落户需要什么条件？</button>
+        <button class="chip">租房补贴需要什么材料？</button>
+        <button class="chip">居住证积分标准分值是多少？</button>
+        <button class="chip">居转户要满几年？</button>
+      </div>
+    </section>
+
+    <div id="out"></div>
   </div>
+</main>
 
-  <div id="out"></div>
-</div>
-
-<div class="foot">
-  <strong>非官方服务</strong> · 本页为个人学习作品，与上海市人力资源和社会保障局无隶属关系。
-  内容基于公开政策文件自动整理，可能存在滞后或错漏，仅供参考，不构成办事依据，请以官方发布为准。
-  数据抓取于 2026-11-16。
-</div>
-
+<footer class="composer">
+  <div class="composer-inner">
+    <textarea id="q" rows="1" placeholder="问点关于上海落户、补贴、积分的事…" autocomplete="off"></textarea>
+    <button class="send" id="go" title="发送（Enter）">↑</button>
+  </div>
+  <div class="composer-hint">
+    <span>Enter 发送 · Shift+Enter 换行</span>
+    <span>非官方服务，仅供参考，不构成办事依据</span>
+  </div>
+</footer>
 <div id="scrim"></div>
 <aside id="drawer" aria-hidden="true">
   <div class="drawer-head">
@@ -334,41 +383,42 @@ function markCitations(text){
 }
 
 /* ── 对话轮次 ──
-   之前每问一句就把上一句的答案覆盖掉，看起来像单轮。
-   现在每轮追加一块，旧答案留在上面，多轮才看得出来。 */
+   用户消息是右侧气泡，助手回复是左侧整宽卡片。
+   滚动只发生在 .chat 容器内部，不动整个页面。 */
+const chat = $("#chat");
+const hero = $("#hero");
 let CURRENT = out;
 
+function scrollToBottom(){
+  chat.scrollTop = chat.scrollHeight;
+}
+
 function startTurn(q){
+  if (hero) hero.style.display = "none";   // 首问之后收起源头区
+
+  // 用户气泡
+  const mine = document.createElement("div");
+  mine.className = "msg-user";
+  mine.innerHTML = `<div class="bubble">${esc(q)}</div>`;
+  out.appendChild(mine);
+
+  // 助手回复容器
   const div = document.createElement("div");
   div.className = "turn";
-  div.innerHTML = `<div class="tq">${esc(q)}</div><div class="ta"></div>`;
+  div.innerHTML = `<div class="ta"></div>`;
   out.appendChild(div);
   CURRENT = div.querySelector(".ta");
-  div.scrollIntoView({ block: "start", behavior: "smooth" });
+
+  scrollToBottom();
 }
 
 function renderEmpty(){
   CURRENT = out;
-  out.innerHTML = `<div class="empty">
-    <div>
-      <div class="k">能问什么</div>
-      <p>人才引进、落户、居住证积分、就业与社保补贴、劳动关系。
-         语料 <span class="num">1301</span> 份文件、<span class="num">7690</span> 条条款，抓取于 2026-11-16。</p>
-    </div>
-    <div>
-      <div class="k">凭什么信</div>
-      <p>每条结论都带引用角标，点开能看到条款原文和前后文。
-         引文必须逐字来自原文，对不上就重试，仍对不上就拒答。</p>
-    </div>
-    <div>
-      <div class="k">有多准</div>
-      <p><span class="num">56</span> 题人工标注评测集：
-         Recall@5 <span class="num">93.3%</span>，
-         引用精确率 <span class="num">74.6%</span>，
-         应拒答的题 <span class="num">100%</span> 拒掉。</p>
-    </div>
-  </div>`;
+  out.innerHTML = "";
+  if (hero) hero.style.display = "";
+  chat.scrollTop = 0;
 }
+
 
 /* ── 流式过程区 ── */
 function renderLive(stageText){
@@ -528,9 +578,10 @@ async function ask(){
 
   const btn = $("#go");
   btn.disabled = true;
-  btn.textContent = "检索中";
+  btn.classList.add("loading");
   startTurn(q);                 // 追加一轮，旧答案留在上面
   ta.value = "";
+  autoGrow();                   // 输入框高度复位
   renderLive("正在检索政策条款");
 
   try{
@@ -607,9 +658,24 @@ function closeDrawer(){
 
 /* ── 事件 ── */
 $("#go").addEventListener("click", ask);
+
+/* 输入框自动增高，最多 160px */
+function autoGrow(){
+  ta.style.height = "auto";
+  ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
+}
+ta.addEventListener("input", autoGrow);
+
 ta.addEventListener("keydown", e => {
   if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); ask(); }
 });
+
+/* 内容变化时自动跟到底部 —— 但只在用户本来就贴着底部时才跟，
+   否则用户往上翻看历史会被强行拽回来。 */
+new MutationObserver(() => {
+  const gap = chat.scrollHeight - chat.scrollTop - chat.clientHeight;
+  if (gap < 140) scrollToBottom();
+}).observe(out, { childList: true, subtree: true, characterData: true });
 $("#examples").addEventListener("click", e => {
   if (e.target.classList.contains("chip")){
     ta.value = e.target.textContent;
